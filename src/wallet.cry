@@ -1,0 +1,433 @@
+# VentriQ Wallet Module
+# Implements wallet functionality and transaction management
+
+IMPORT "../ext/wallet_system.cry"
+IMPORT "../ext/miner_reward_distribution.cry"
+
+# Wallet constants
+CONST DUST_AMOUNT 1000            # Minimum transaction amount
+CONST MAX_TX_INPUTS 127           # Maximum inputs per transaction
+CONST MAX_TX_OUTPUTS 127          # Maximum outputs per transaction
+CONST TX_VERSION 1                # Current transaction version
+CONST LOCKTIME_THRESHOLD 500000000 # Threshold for timestamp vs block height
+
+# Transaction structure
+STRUCT Transaction
+    u32     version
+    u32     timestamp
+    array   inputs
+    array   outputs
+    bytes   signature
+END
+
+# UTXO structure
+STRUCT UTXO
+    bytes32 tx_hash
+    u32     output_index
+    u64     amount
+    bytes   pubkey_hash
+END
+
+# Wallet state
+:wallet_state
+    bytes   private_key
+    bytes   public_key
+    bytes   address
+    array   utxos          # Unspent transaction outputs
+    array   pending_txs    # Pending transactions
+    u64     balance        # Current balance
+    bool    is_locked      # Wallet lock status
+
+# Initialize wallet
+:init
+    # Check if wallet exists
+    CALL wallet_system:check_exists
+    IF_SUCCESS
+        CALL load_wallet
+    ELSE
+        CALL create_wallet
+    END_IF
+    
+    # Initialize UTXO set
+    ARRAY_NEW
+    STORE utxos
+    
+    # Initialize pending transactions
+    ARRAY_NEW
+    STORE pending_txs
+    
+    # Calculate initial balance
+    CALL update_balance
+    
+    PUSH false
+    STORE is_locked
+    
+    LOG_INFO "Wallet initialized successfully"
+    RETURN 0
+
+# Create new wallet
+:create_wallet
+    # Generate new key pair
+    CALL wallet_system:generate_keypair
+    IF_ERR
+        LOG_ERROR "Failed to generate wallet keypair"
+        RETURN_ERR
+    END_IF
+    
+    # Store keys
+    DUP
+    GET private_key
+    STORE private_key
+    
+    DUP
+    GET public_key
+    STORE public_key
+    
+    # Generate address
+    CALL generate_address
+    STORE address
+    
+    # Save wallet
+    CALL save_wallet
+    
+    RETURN 0
+
+# Load existing wallet
+:load_wallet
+    CALL wallet_system:load
+    IF_ERR
+        LOG_ERROR "Failed to load wallet"
+        RETURN_ERR
+    END_IF
+    
+    # Store wallet data
+    DUP
+    GET private_key
+    STORE private_key
+    
+    DUP
+    GET public_key
+    STORE public_key
+    
+    GET address
+    STORE address
+    
+    RETURN 0
+
+# Save wallet to storage
+:save_wallet
+    NEW_WALLET_DATA
+        GET private_key
+        GET public_key
+        GET address
+    END_WALLET_DATA
+    
+    CALL wallet_system:save
+    
+    RETURN
+
+# Generate wallet address
+:generate_address
+    # Stack: [public_key]
+    # Hash public key
+    HASH SHA256
+    HASH RIPEMD160
+    
+    # Add version byte
+    PUSH 0x00
+    PREPEND
+    
+    # Add checksum
+    DUP
+    HASH SHA256
+    HASH SHA256
+    SPLIT 4
+    APPEND
+    
+    # Encode in base58
+    ENCODE_BASE58
+    
+    RETURN
+
+# Create new transaction
+:create_transaction
+    # Stack: [to_address, amount]
+    # Check if wallet is locked
+    GET is_locked
+    IF
+        LOG_ERROR "Wallet is locked"
+        RETURN_ERR
+    END_IF
+    
+    # Verify amount
+    DUP
+    PUSH DUST_AMOUNT
+    LT
+    IF
+        LOG_ERROR "Amount below dust threshold"
+        RETURN_ERR
+    END_IF
+    
+    # Select UTXOs
+    CALL select_utxos
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Create transaction
+    NEW_TRANSACTION
+        PUSH TX_VERSION
+        TIME
+        ROT     # inputs
+        SWAP    # outputs
+        PUSH "" # empty signature
+    END_TRANSACTION
+    
+    # Sign transaction
+    CALL sign_transaction
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Add to pending transactions
+    GET pending_txs
+    ARRAY_PUSH
+    
+    RETURN 0
+
+# Sign transaction
+:sign_transaction
+    # Stack: [transaction]
+    # Create signature hash
+    CALL create_signature_hash
+    
+    # Sign with private key
+    GET private_key
+    CALL wallet_system:sign
+    
+    # Add signature to transaction
+    STORE_FIELD signature
+    
+    RETURN 0
+
+# Verify transaction
+:verify_transaction
+    # Stack: [transaction]
+    # Verify basic structure
+    CALL verify_tx_structure
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify signature
+    DUP
+    GET signature
+    SWAP
+    CALL create_signature_hash
+    CALL wallet_system:verify_signature
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify amounts
+    CALL verify_tx_amounts
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Process pending transactions
+:process_pending
+    GET pending_txs
+    FOREACH tx
+        DUP
+        CALL verify_transaction
+        IF_SUCCESS
+            # Broadcast to network
+            CALL network:broadcast_transaction
+            
+            # Remove from pending
+            GET pending_txs
+            ARRAY_REMOVE
+        END_IF
+    END_FOREACH
+    
+    RETURN 0
+
+# Update wallet balance
+:update_balance
+    PUSH 0
+    GET utxos
+    FOREACH utxo
+        GET amount
+        ADD
+    END_FOREACH
+    STORE balance
+    
+    RETURN
+
+# Lock wallet
+:lock
+    PUSH true
+    STORE is_locked
+    RETURN 0
+
+# Unlock wallet
+:unlock
+    # Stack: [password]
+    CALL wallet_system:verify_password
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    PUSH false
+    STORE is_locked
+    RETURN 0
+
+# Helper functions
+:select_utxos
+    # Stack: [amount]
+    # Select UTXOs to cover amount
+    GET utxos
+    CALL select_optimal_utxos
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN
+
+:create_signature_hash
+    # Stack: [transaction]
+    # Create hash for signing
+    DUP
+    GET version
+    SWAP
+    GET timestamp
+    SWAP
+    GET inputs
+    SWAP
+    GET outputs
+    CONCAT
+    HASH SHA256
+    RETURN
+
+:verify_tx_structure
+    # Stack: [transaction]
+    # Verify transaction structure
+    DUP
+    GET inputs
+    ARRAY_LEN
+    PUSH MAX_TX_INPUTS
+    GT
+    IF
+        RETURN 1
+    END_IF
+    
+    DUP
+    GET outputs
+    ARRAY_LEN
+    PUSH MAX_TX_OUTPUTS
+    GT
+    IF
+        RETURN 2
+    END_IF
+    
+    RETURN 0
+
+:verify_tx_amounts
+    # Stack: [transaction]
+    # Verify input amounts >= output amounts
+    DUP
+    GET inputs
+    CALL sum_inputs
+    
+    SWAP
+    GET outputs
+    CALL sum_outputs
+    
+    LT
+    IF
+        RETURN 1
+    END_IF
+    
+    RETURN 0
+
+:sum_inputs
+    # Stack: [inputs]
+    PUSH 0
+    SWAP
+    FOREACH input
+        GET amount
+        ADD
+    END_FOREACH
+    RETURN
+
+:sum_outputs
+    # Stack: [outputs]
+    PUSH 0
+    SWAP
+    FOREACH output
+        GET amount
+        ADD
+    END_FOREACH
+    RETURN
+
+# Get wallet address
+:get_address
+    GET address
+    RETURN
+
+# Get wallet balance
+:get_balance
+    GET balance
+    RETURN
+
+# Add transaction to wallet
+:add_transaction
+    # Stack: [transaction]
+    # Update UTXOs
+    CALL update_utxos
+    
+    # Update balance
+    CALL update_balance
+    
+    RETURN 0
+
+# Update UTXOs
+:update_utxos
+    # Stack: [transaction]
+    # Remove spent UTXOs
+    DUP
+    GET inputs
+    FOREACH input
+        GET tx_hash
+        GET output_index
+        CALL remove_utxo
+    END_FOREACH
+    
+    # Add new UTXOs
+    GET outputs
+    FOREACH output
+        DUP
+        GET address
+        GET address
+        EQ
+        IF
+            CALL add_utxo
+        END_IF
+    END_FOREACH
+    
+    RETURN
+
+:add_utxo
+    # Stack: [utxo]
+    GET utxos
+    ARRAY_PUSH
+    RETURN
+
+:remove_utxo
+    # Stack: [tx_hash, output_index]
+    GET utxos
+    ARRAY_REMOVE_IF
+    RETURN
