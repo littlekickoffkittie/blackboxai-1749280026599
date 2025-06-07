@@ -1,0 +1,391 @@
+# VentriQ Peer Discovery
+# Implements peer discovery and management
+
+IMPORT "../src/network.cry"
+IMPORT "node_heartbeat_system.cry"
+
+# Constants
+CONST MAX_PEERS 50
+CONST MIN_PEERS 3
+CONST DISCOVERY_INTERVAL 300000  # 5 minutes
+CONST PEER_TIMEOUT 1800000      # 30 minutes
+CONST MAX_INBOUND 40
+CONST MAX_OUTBOUND 10
+
+# Peer structure
+STRUCT Peer
+    str     address
+    u16     port
+    str     node_id
+    u64     last_seen
+    bool    is_outbound
+    u32     failed_attempts
+    bytes   fractal_sigil
+END
+
+# Discovery state
+:discovery_state
+    array   peers           # Known peers
+    array   banned_peers    # Banned peer addresses
+    u64     last_discovery  # Last discovery attempt
+    bool    is_discovering  # Currently discovering
+    u32     inbound_count
+    u32     outbound_count
+
+# Initialize peer discovery
+:init
+    # Initialize peer lists
+    ARRAY_NEW
+    STORE peers
+    
+    ARRAY_NEW
+    STORE banned_peers
+    
+    # Initialize counters
+    PUSH 0
+    STORE inbound_count
+    STORE outbound_count
+    
+    TIME
+    STORE last_discovery
+    
+    PUSH false
+    STORE is_discovering
+    
+    RETURN 0
+
+# Start peer discovery
+:start
+    PUSH true
+    STORE is_discovering
+    
+    # Start discovery loop
+    SPAWN discovery_loop
+    
+    RETURN 0
+
+# Stop peer discovery
+:stop
+    PUSH false
+    STORE is_discovering
+    
+    RETURN 0
+
+# Main discovery loop
+:discovery_loop
+    WHILE GET is_discovering
+        # Check if discovery needed
+        CALL check_discovery_needed
+        IF_SUCCESS
+            CALL perform_discovery
+        END_IF
+        
+        # Clean up stale peers
+        CALL cleanup_peers
+        
+        # Sleep for interval
+        PUSH DISCOVERY_INTERVAL
+        SLEEP
+    END_WHILE
+    RETURN
+
+# Check if discovery needed
+:check_discovery_needed
+    # Check peer count
+    GET peers
+    ARRAY_LEN
+    PUSH MIN_PEERS
+    LT
+    IF
+        RETURN 0
+    END_IF
+    
+    # Check discovery interval
+    TIME
+    GET last_discovery
+    SUB
+    PUSH DISCOVERY_INTERVAL
+    GT
+    IF
+        RETURN 0
+    END_IF
+    
+    RETURN 1
+
+# Perform peer discovery
+:perform_discovery
+    # Update timestamp
+    TIME
+    STORE last_discovery
+    
+    # Try DNS seeds
+    CALL query_dns_seeds
+    
+    # Try known peers
+    CALL query_known_peers
+    
+    # Try bootstrap nodes
+    CALL query_bootstrap_nodes
+    
+    RETURN
+
+# Add new peer
+:add_peer
+    # Stack: [address, port, node_id, is_outbound]
+    # Check if banned
+    OVER    # address
+    CALL is_peer_banned
+    IF
+        DROP
+        RETURN 1
+    END_IF
+    
+    # Check peer limits
+    ROT     # is_outbound
+    IF
+        GET outbound_count
+        PUSH MAX_OUTBOUND
+        GE
+        IF
+            DROP
+            RETURN 2
+        END_IF
+    ELSE
+        GET inbound_count
+        PUSH MAX_INBOUND
+        GE
+        IF
+            DROP
+            RETURN 2
+        END_IF
+    END_IF
+    
+    # Create peer structure
+    NEW_PEER
+        ROT     # address
+        ROT     # port
+        ROT     # node_id
+        TIME    # last_seen
+        ROT     # is_outbound
+        PUSH 0  # failed_attempts
+        CALL generate_peer_sigil
+    END_PEER
+    
+    # Add to peer list
+    GET peers
+    ARRAY_PUSH
+    
+    # Update counters
+    SWAP    # is_outbound
+    IF
+        GET outbound_count
+        ADD 1
+        STORE outbound_count
+    ELSE
+        GET inbound_count
+        ADD 1
+        STORE inbound_count
+    END_IF
+    
+    RETURN 0
+
+# Remove peer
+:remove_peer
+    # Stack: [peer]
+    # Update counters
+    GET is_outbound
+    IF
+        GET outbound_count
+        SUB 1
+        STORE outbound_count
+    ELSE
+        GET inbound_count
+        SUB 1
+        STORE inbound_count
+    END_IF
+    
+    # Remove from peer list
+    GET peers
+    ARRAY_REMOVE
+    
+    RETURN
+
+# Ban peer
+:ban_peer
+    # Stack: [address]
+    # Add to banned list
+    GET banned_peers
+    ARRAY_PUSH
+    
+    # Remove if connected
+    CALL find_peer
+    IF_SUCCESS
+        CALL remove_peer
+    END_IF
+    
+    RETURN
+
+# Check if peer is banned
+:is_peer_banned
+    # Stack: [address]
+    GET banned_peers
+    ARRAY_CONTAINS
+    RETURN
+
+# Update peer last seen
+:update_peer_seen
+    # Stack: [peer]
+    TIME
+    STORE_FIELD last_seen
+    
+    # Reset failed attempts
+    PUSH 0
+    STORE_FIELD failed_attempts
+    
+    RETURN
+
+# Handle peer failure
+:handle_peer_failure
+    # Stack: [peer]
+    # Increment failed attempts
+    GET failed_attempts
+    ADD 1
+    STORE_FIELD failed_attempts
+    
+    # Check if should ban
+    GET failed_attempts
+    PUSH 3
+    GT
+    IF
+        GET address
+        CALL ban_peer
+    END_IF
+    
+    RETURN
+
+# Clean up stale peers
+:cleanup_peers
+    TIME
+    GET peers
+    FOREACH peer
+        # Check last seen
+        DUP
+        GET last_seen
+        SUB
+        PUSH PEER_TIMEOUT
+        GT
+        IF
+            CALL remove_peer
+        END_IF
+    END_FOREACH
+    
+    RETURN
+
+# Query DNS seeds
+:query_dns_seeds
+    # Try each DNS seed
+    ARRAY ["seed1.ventriq.io", "seed2.ventriq.io", "seed3.ventriq.io"]
+    FOREACH seed
+        CALL resolve_dns_seed
+        IF_SUCCESS
+            FOREACH address
+                CALL try_connect_peer
+            END_FOREACH
+        END_IF
+    END_FOREACH
+    
+    RETURN
+
+# Query known peers
+:query_known_peers
+    GET peers
+    FOREACH peer
+        # Request their peer list
+        CALL request_peer_list
+        IF_SUCCESS
+            FOREACH new_peer
+                CALL try_connect_peer
+            END_FOREACH
+        END_IF
+    END_FOREACH
+    
+    RETURN
+
+# Query bootstrap nodes
+:query_bootstrap_nodes
+    ARRAY [
+        "bootstrap1.ventriq.io:8333",
+        "bootstrap2.ventriq.io:8333",
+        "bootstrap3.ventriq.io:8333"
+    ]
+    FOREACH node
+        CALL try_connect_peer
+    END_FOREACH
+    
+    RETURN
+
+# Helper functions
+:generate_peer_sigil
+    # Generate unique fractal pattern for peer
+    RANDOM 32
+    CALL fractal:generate_pattern
+    RETURN
+
+:find_peer
+    # Stack: [address]
+    GET peers
+    ARRAY_FIND address
+    RETURN
+
+:try_connect_peer
+    # Stack: [address]
+    # Parse address and port
+    CALL parse_address
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Try connection
+    CALL network:connect_peer
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:resolve_dns_seed
+    # Stack: [hostname]
+    # Resolve DNS
+    DNS_RESOLVE
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN
+
+:request_peer_list
+    # Stack: [peer]
+    # Send getaddr message
+    NEW_MESSAGE
+        PUSH MSG_GETADDR
+    END_MESSAGE
+    
+    CALL network:send_message
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:parse_address
+    # Stack: [address_string]
+    # Split address and port
+    PUSH ":"
+    SPLIT
+    
+    # Validate port
+    PUSH 1
+    ARRAY_GET
+    STR_TO_INT
+    
+    RETURN
