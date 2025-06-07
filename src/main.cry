@@ -1,0 +1,83 @@
+# VentriQ Main Entry Point
+# Core initialization and bootstrapping
+
+IMPORT "blockchain.cry"
+IMPORT "mining.cry"
+IMPORT "network.cry"
+IMPORT "wallet.cry"
+IMPORT "node.cry"
+IMPORT "../ext/peer_discovery.cry"
+IMPORT "../ext/node_heartbeat_system.cry"
+
+# Configuration constants
+PUSH 8000  # Default port
+PUSH "VentriQ-Node-v1.0"  # Node identifier
+PUSH 30    # Block time in seconds
+PUSH 4     # Initial mining difficulty
+
+# Initialize core systems
+:init_node
+    # Stack: [difficulty, block_time, node_id, port]
+    CALL blockchain:init    # Initialize blockchain
+    IF_ERR
+        LOG_ERROR "Failed to initialize blockchain"
+        EXIT 1
+    END_IF
+
+    CALL network:init      # Initialize networking
+    IF_ERR
+        LOG_ERROR "Failed to initialize network"
+        EXIT 1
+    END_IF
+
+    CALL wallet:init       # Initialize wallet system
+    CALL mining:init       # Initialize mining module
+
+    # Start peer discovery
+    PEER_DISCOVERY:start
+    NODE_HEARTBEAT:start
+
+    # Initialize terminal UI
+    TERMINAL:clear
+    TERMINAL:draw_header
+    LOG_INFO "VentriQ node initialized successfully"
+    
+    # Enter main event loop
+    JUMP main_loop
+
+:main_loop
+    # Main event processing loop
+    LOOP
+        # Process network messages
+        CALL network:process_messages
+        
+        # Check mining status
+        CALL mining:check_status
+        
+        # Update terminal display
+        CALL terminal:update_display
+        
+        # Process any pending transactions
+        CALL wallet:process_pending
+        
+        # Heartbeat check
+        CALL node_heartbeat:check
+        
+        # Small delay to prevent CPU overload
+        SLEEP 100
+    END_LOOP
+
+:cleanup
+    # Cleanup on exit
+    CALL network:shutdown
+    CALL mining:stop
+    LOG_INFO "Node shutting down gracefully"
+    EXIT 0
+
+# Error handlers
+:handle_error
+    LOG_ERROR "Fatal error encountered"
+    JUMP cleanup
+
+# Start the node
+JUMP init_node
