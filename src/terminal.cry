@@ -1,0 +1,342 @@
+# VentriQ Terminal Interface Module
+# Handles terminal-based UI rendering and user interaction
+
+IMPORT "../ext/terminal_fractal_renderer.cry"
+
+# Terminal display constants
+CONST TERM_WIDTH 80
+CONST TERM_HEIGHT 24
+CONST HEADER_HEIGHT 3
+CONST FOOTER_HEIGHT 2
+
+# Color codes for terminal output
+CONST COLOR_RESET "\x1b[0m"
+CONST COLOR_HEADER "\x1b[1;36m"    # Bright Cyan
+CONST COLOR_ERROR "\x1b[1;31m"     # Bright Red
+CONST COLOR_SUCCESS "\x1b[1;32m"   # Bright Green
+CONST COLOR_INFO "\x1b[1;34m"      # Bright Blue
+CONST COLOR_MINING "\x1b[1;35m"    # Bright Magenta
+CONST COLOR_FRACTAL "\x1b[1;37m"   # Bright White
+
+# Terminal state
+:term_state
+    bool cursor_visible
+    u32  last_update
+    str  current_status
+
+# Initialize terminal
+:init
+    # Clear screen and hide cursor
+    PRINT "\x1b[2J\x1b[H"     # Clear screen and move to home
+    PRINT "\x1b[?25l"         # Hide cursor
+    PUSH false
+    STORE cursor_visible
+    
+    TIME
+    STORE last_update
+    
+    PUSH "Initializing..."
+    STORE current_status
+    
+    CALL draw_header
+    CALL draw_footer
+    
+    RETURN 0
+
+# Clean up terminal on exit
+:cleanup
+    # Show cursor
+    PRINT "\x1b[?25h"
+    PUSH true
+    STORE cursor_visible
+    
+    # Clear screen
+    PRINT "\x1b[2J\x1b[H"
+    
+    RETURN 0
+
+# Draw main header
+:draw_header
+    # Draw top border
+    PUSH COLOR_HEADER
+    PRINT
+    PUSH "╔"
+    CALL draw_horizontal_line
+    PUSH "╗\n"
+    PRINT
+    
+    # Draw title
+    PUSH "║"
+    PRINT
+    PUSH "VentriQ Node"
+    CALL center_text
+    PUSH "║\n"
+    PRINT
+    
+    # Draw bottom border
+    PUSH "╚"
+    CALL draw_horizontal_line
+    PUSH "╝\n"
+    PRINT
+    
+    PUSH COLOR_RESET
+    PRINT
+    
+    RETURN
+
+# Draw footer with status
+:draw_footer
+    # Position cursor
+    PUSH TERM_HEIGHT
+    SUB FOOTER_HEIGHT
+    CALL move_cursor_to_line
+    
+    # Draw top border
+    PUSH COLOR_INFO
+    PRINT
+    PUSH "╔"
+    CALL draw_horizontal_line
+    PUSH "╗\n"
+    PRINT
+    
+    # Draw status
+    PUSH "║"
+    PRINT
+    GET current_status
+    CALL center_text
+    PUSH "║\n"
+    PRINT
+    
+    # Draw bottom border
+    PUSH "╚"
+    CALL draw_horizontal_line
+    PUSH "╝"
+    PRINT
+    
+    PUSH COLOR_RESET
+    PRINT
+    
+    RETURN
+
+# Update mining display
+:update_mining_stats
+    # Stack: [hash_rate]
+    # Save cursor position
+    PRINT "\x1b[s"
+    
+    # Move to mining stats position
+    PUSH 5  # Line number after header
+    CALL move_cursor_to_line
+    
+    # Draw mining stats
+    PUSH COLOR_MINING
+    PRINT
+    
+    PUSH "Mining Status:\n"
+    PRINT
+    
+    PUSH "Hash Rate: "
+    PRINT
+    PUSH_FORMAT "{:.2f} H/s\n"
+    PRINT
+    
+    PUSH "Target: "
+    PRINT
+    GET current_target
+    CALL format_hex
+    PRINT "\n"
+    
+    PUSH COLOR_RESET
+    PRINT
+    
+    # Restore cursor position
+    PRINT "\x1b[u"
+    
+    RETURN
+
+# Draw QR pattern
+:draw_qr_pattern
+    # Stack: [qr_data]
+    # Save cursor position
+    PRINT "\x1b[s"
+    
+    # Move to QR display position
+    PUSH 10  # Line number
+    CALL move_cursor_to_line
+    
+    # Draw QR code border
+    PUSH COLOR_FRACTAL
+    PRINT
+    
+    CALL draw_qr_border_top
+    
+    # Convert QR data to ASCII art
+    CALL qr_to_ascii
+    PRINT
+    
+    CALL draw_qr_border_bottom
+    
+    PUSH COLOR_RESET
+    PRINT
+    
+    # Restore cursor position
+    PRINT "\x1b[u"
+    
+    RETURN
+
+# Draw block added animation
+:draw_block_added
+    # Stack: [block]
+    # Save cursor position
+    PRINT "\x1b[s"
+    
+    # Move to animation position
+    PUSH 15  # Line number
+    CALL move_cursor_to_line
+    
+    # Draw success message
+    PUSH COLOR_SUCCESS
+    PRINT
+    
+    PUSH "Block Added Successfully!"
+    CALL center_text
+    PRINT "\n"
+    
+    # Draw block details with fractal pattern
+    CALL terminal_fractal_renderer:draw_block_animation
+    
+    PUSH COLOR_RESET
+    PRINT
+    
+    # Restore cursor position
+    PRINT "\x1b[u"
+    
+    # Update status
+    PUSH "Block added to chain"
+    STORE current_status
+    CALL draw_footer
+    
+    RETURN
+
+# Helper functions
+:draw_horizontal_line
+    # Draw horizontal line with ═ characters
+    PUSH TERM_WIDTH
+    SUB 2   # Account for corners
+    PUSH "═"
+    MULTIPLY
+    PRINT
+    RETURN
+
+:move_cursor_to_line
+    # Stack: [line_number]
+    PUSH_FORMAT "\x1b[{};1H"
+    PRINT
+    RETURN
+
+:center_text
+    # Stack: [text]
+    # Calculate padding
+    DUP
+    STR_LEN
+    PUSH TERM_WIDTH
+    SUB 2   # Account for borders
+    SWAP
+    SUB     # Get total padding needed
+    PUSH 2
+    DIV     # Split padding between left and right
+    
+    # Add padding
+    PUSH " "
+    MULTIPLY    # Left padding
+    SWAP        # Original text
+    CONCAT
+    PUSH " "
+    ROT         # Right padding amount
+    MULTIPLY
+    CONCAT
+    
+    RETURN
+
+:qr_to_ascii
+    # Convert QR binary data to ASCII art
+    # Uses ░, ▒, ▓, █ characters for different densities
+    FOREACH byte
+        DUP
+        PUSH 0xC0
+        AND
+        PUSH 6
+        SHR
+        PUSH ["░", "▒", "▓", "█"]
+        SWAP
+        ARRAY_GET
+        PRINT
+    END_FOREACH
+    RETURN
+
+:draw_qr_border_top
+    PUSH "╔"
+    PRINT
+    PUSH 32  # QR code width
+    PUSH "═"
+    MULTIPLY
+    PRINT
+    PUSH "╗\n"
+    PRINT
+    RETURN
+
+:draw_qr_border_bottom
+    PUSH "╚"
+    PRINT
+    PUSH 32  # QR code width
+    PUSH "═"
+    MULTIPLY
+    PRINT
+    PUSH "╝\n"
+    PRINT
+    RETURN
+
+:format_hex
+    # Format bytes as hex string
+    PUSH_FORMAT "0x{:016x}"
+    RETURN
+
+# Logging functions
+:log_error
+    # Stack: [message]
+    PUSH COLOR_ERROR
+    PRINT
+    PUSH "[ERROR] "
+    PRINT
+    PRINT
+    PUSH "\n"
+    PRINT
+    PUSH COLOR_RESET
+    PRINT
+    RETURN
+
+:log_info
+    # Stack: [message]
+    PUSH COLOR_INFO
+    PRINT
+    PUSH "[INFO] "
+    PRINT
+    PRINT
+    PUSH "\n"
+    PRINT
+    PUSH COLOR_RESET
+    PRINT
+    RETURN
+
+:log_success
+    # Stack: [message]
+    PUSH COLOR_SUCCESS
+    PRINT
+    PUSH "[SUCCESS] "
+    PRINT
+    PRINT
+    PUSH "\n"
+    PRINT
+    PUSH COLOR_RESET
+    PRINT
+    RETURN
