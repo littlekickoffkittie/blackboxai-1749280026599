@@ -1,0 +1,211 @@
+# VentriQ Mining Module
+# Implements QR-based Proof of Work mining with fractal visualization
+
+IMPORT "fractal.cry"
+IMPORT "terminal.cry"
+IMPORT "../ext/qr_pow_validator.cry"
+IMPORT "../ext/terminal_fractal_renderer.cry"
+IMPORT "../ext/miner_reward_distribution.cry"
+
+# Mining constants
+CONST MAX_NONCE u64:18446744073709551615  # Maximum nonce value (2^64 - 1)
+CONST MINING_THREAD_SLEEP 100              # Sleep time between mining attempts (ms)
+CONST QR_MIN_DENSITY 0.3                   # Minimum QR code density for valid PoW
+CONST QR_MAX_NOISE 0.2                     # Maximum allowed noise in QR pattern
+
+# Mining state variables
+:mining_state
+    bool    is_mining
+    u64     current_nonce
+    bytes32 current_target
+    Block   current_block
+    u64     start_time
+    u32     hashes_tried
+
+# Initialize mining module
+:init
+    PUSH false
+    STORE is_mining
+    PUSH 0
+    STORE current_nonce
+    STORE hashes_tried
+    
+    LOG_INFO "Mining module initialized"
+    RETURN 0
+
+# Start mining
+:start_mining
+    # Stack: [block, target]
+    STORE current_target
+    STORE current_block
+    
+    PUSH true
+    STORE is_mining
+    
+    TIME
+    STORE start_time
+    
+    PUSH 0
+    STORE current_nonce
+    
+    LOG_INFO "Starting mining operation"
+    CALL terminal:draw_mining_start
+    
+    # Start mining loop in separate thread
+    SPAWN mining_loop
+    
+    RETURN 0
+
+# Main mining loop
+:mining_loop
+    WHILE GET is_mining
+        # Try to find valid nonce
+        CALL attempt_mining
+        IF_SUCCESS
+            CALL handle_successful_mine
+            BREAK
+        END_IF
+        
+        # Update terminal display periodically
+        GET hashes_tried
+        MOD 100
+        IF_ZERO
+            CALL update_mining_display
+        END_IF
+        
+        # Small sleep to prevent CPU overload
+        SLEEP MINING_THREAD_SLEEP
+    END_WHILE
+    RETURN
+
+# Attempt to mine a block
+:attempt_mining
+    # Get current block and increment nonce
+    GET current_block
+    GET current_nonce
+    ADD 1
+    DUP
+    STORE current_nonce
+    
+    # Check if we've exceeded max nonce
+    PUSH MAX_NONCE
+    GT
+    IF
+        LOG_INFO "Maximum nonce reached, updating block timestamp"
+        CALL update_block_timestamp
+        PUSH 0
+        STORE current_nonce
+    END_IF
+    
+    # Generate QR code from block header + nonce
+    CALL create_qr_code
+    
+    # Validate QR-based PoW
+    GET current_target
+    CALL qr_pow:validate
+    IF_SUCCESS
+        RETURN 0
+    END_IF
+    
+    # Increment hash counter
+    GET hashes_tried
+    ADD 1
+    STORE hashes_tried
+    
+    RETURN 1
+
+# Create QR code from block data
+:create_qr_code
+    # Stack: [block, nonce]
+    # Combine block header fields with nonce
+    CONCAT
+        GET index
+        GET prev_hash
+        GET timestamp
+        ROT     # nonce
+    END_CONCAT
+    
+    # Generate QR code
+    QRGEN
+    
+    # Store in block's qr_nonce field
+    STORE_FIELD current_block qr_nonce
+    
+    RETURN
+
+# Handle successful mining
+:handle_successful_mine
+    LOG_INFO "Valid proof of work found!"
+    
+    # Generate miner's fractal sigil
+    CALL fractal:generate_sigil
+    STORE_FIELD current_block fractal_sigil
+    
+    # Calculate mining rewards
+    GET current_block
+    CALL miner_reward:calculate
+    
+    # Add block to chain
+    GET current_block
+    CALL blockchain:add_block
+    IF_ERR
+        LOG_ERROR "Failed to add mined block to chain"
+        RETURN_ERR
+    END_IF
+    
+    # Distribute rewards
+    CALL miner_reward:distribute
+    
+    # Display success animation
+    CALL terminal_fractal_renderer:animate_success
+    
+    # Stop mining
+    PUSH false
+    STORE is_mining
+    
+    RETURN 0
+
+# Update mining display
+:update_mining_display
+    # Calculate hash rate
+    TIME
+    GET start_time
+    SUB                     # elapsed time
+    GET hashes_tried
+    SWAP
+    DIV                     # hashes per second
+    
+    # Update terminal display
+    CALL terminal:update_mining_stats
+    
+    # Draw current QR pattern
+    GET current_block
+    GET qr_nonce
+    CALL terminal:draw_qr_pattern
+    
+    # Draw fractal progress indicator
+    GET hashes_tried
+    CALL terminal_fractal_renderer:draw_progress
+    
+    RETURN
+
+# Stop mining
+:stop_mining
+    PUSH false
+    STORE is_mining
+    LOG_INFO "Mining operation stopped"
+    RETURN 0
+
+# Helper functions
+:update_block_timestamp
+    TIME
+    STORE_FIELD current_block timestamp
+    RETURN
+
+# Check mining status
+:check_status
+    GET is_mining
+    IF
+        CALL update_mining_display
+    END_IF
+    RETURN
