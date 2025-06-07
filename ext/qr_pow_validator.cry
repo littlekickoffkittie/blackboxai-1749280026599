@@ -1,0 +1,392 @@
+# VentriQ QR Code Proof of Work Validator
+# Validates QR code-based proof of work
+
+IMPORT "../src/mining.cry"
+
+# Constants
+CONST MIN_QR_VERSION 1
+CONST MAX_QR_VERSION 4
+CONST MIN_DENSITY 0.3       # Minimum QR code density
+CONST MAX_DENSITY 0.8       # Maximum QR code density
+CONST MAX_NOISE 0.2        # Maximum allowed noise ratio
+CONST MIN_ERROR_CORRECTION 1  # Level M (15%)
+
+# QR code structure
+STRUCT QRCode
+    u32     version
+    u32     size
+    array   modules      # QR code modules (binary matrix)
+    u32     error_level
+    f32     density
+    f32     noise_ratio
+END
+
+# Validation state
+:validator_state
+    u32 current_difficulty
+    u32 total_validated
+    u64 last_adjustment
+
+# Initialize validator
+:init
+    # Set initial difficulty
+    PUSH 1
+    STORE current_difficulty
+    
+    PUSH 0
+    STORE total_validated
+    
+    TIME
+    STORE last_adjustment
+    
+    RETURN 0
+
+# Validate QR proof of work
+:validate
+    # Stack: [qr_data, target]
+    # Parse QR code
+    CALL parse_qr_code
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify basic structure
+    CALL verify_structure
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Check density requirements
+    CALL check_density
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Validate noise levels
+    CALL check_noise
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify error correction
+    CALL verify_error_correction
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Check against target
+    CALL check_target
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Update statistics
+    GET total_validated
+    ADD 1
+    STORE total_validated
+    
+    RETURN 0
+
+# Parse QR code data
+:parse_qr_code
+    # Stack: [qr_data]
+    # Verify data length
+    DUP
+    STR_LEN
+    CALL verify_length
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Parse version
+    CALL parse_version
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Create QR structure
+    NEW_QRCODE
+        ROT     # version
+        CALL calculate_size
+        CALL parse_modules
+        CALL detect_error_level
+        CALL calculate_density
+        CALL calculate_noise
+    END_QRCODE
+    
+    RETURN
+
+# Verify QR code structure
+:verify_structure
+    # Stack: [qr_code]
+    # Check version
+    GET version
+    PUSH MIN_QR_VERSION
+    LT
+    IF
+        RETURN 1
+    END_IF
+    
+    GET version
+    PUSH MAX_QR_VERSION
+    GT
+    IF
+        RETURN 2
+    END_IF
+    
+    # Verify size matches version
+    GET size
+    CALL calculate_expected_size
+    EQ
+    IF_NOT
+        RETURN 3
+    END_IF
+    
+    RETURN 0
+
+# Check density requirements
+:check_density
+    # Stack: [qr_code]
+    GET density
+    
+    # Check minimum density
+    PUSH MIN_DENSITY
+    LT
+    IF
+        RETURN 1
+    END_IF
+    
+    # Check maximum density
+    PUSH MAX_DENSITY
+    GT
+    IF
+        RETURN 2
+    END_IF
+    
+    RETURN 0
+
+# Check noise levels
+:check_noise
+    # Stack: [qr_code]
+    GET noise_ratio
+    PUSH MAX_NOISE
+    GT
+    IF
+        RETURN 1
+    END_IF
+    
+    RETURN 0
+
+# Verify error correction level
+:verify_error_correction
+    # Stack: [qr_code]
+    GET error_level
+    PUSH MIN_ERROR_CORRECTION
+    LT
+    IF
+        RETURN 1
+    END_IF
+    
+    RETURN 0
+
+# Check against target
+:check_target
+    # Stack: [qr_code, target]
+    # Calculate QR hash
+    CALL calculate_qr_hash
+    
+    # Compare with target
+    GT
+    IF
+        RETURN 1
+    END_IF
+    
+    RETURN 0
+
+# Helper functions
+:verify_length
+    # Stack: [length]
+    # Check minimum length
+    PUSH 100
+    LT
+    IF
+        RETURN 1
+    END_IF
+    
+    # Check maximum length
+    PUSH 4096
+    GT
+    IF
+        RETURN 2
+    END_IF
+    
+    RETURN 0
+
+:parse_version
+    # Stack: [qr_data]
+    # Extract version byte
+    PUSH 0
+    ARRAY_GET
+    
+    # Validate version
+    PUSH MIN_QR_VERSION
+    PUSH MAX_QR_VERSION
+    BETWEEN
+    IF_NOT
+        RETURN 1
+    END_IF
+    
+    RETURN
+
+:calculate_size
+    # Stack: [version]
+    # Size = (version * 4) + 17
+    PUSH 4
+    MUL
+    PUSH 17
+    ADD
+    
+    RETURN
+
+:parse_modules
+    # Stack: [qr_data, size]
+    # Create module matrix
+    DUP
+    MUL     # square size
+    ARRAY_NEW
+    
+    # Parse modules
+    CALL parse_module_data
+    
+    RETURN
+
+:detect_error_level
+    # Stack: [qr_code]
+    # Analyze error correction patterns
+    CALL analyze_error_patterns
+    
+    RETURN
+
+:calculate_density
+    # Stack: [qr_code]
+    # Count filled modules
+    GET modules
+    PUSH 0
+    SWAP
+    FOREACH module
+        ADD
+    END_FOREACH
+    
+    # Divide by total modules
+    GET size
+    DUP
+    MUL     # square size
+    DIV
+    
+    RETURN
+
+:calculate_noise
+    # Stack: [qr_code]
+    # Analyze pattern disruption
+    CALL analyze_pattern_noise
+    
+    RETURN
+
+:calculate_qr_hash
+    # Stack: [qr_code]
+    # Serialize QR data
+    CALL serialize_qr
+    
+    # Calculate hash
+    HASH SHA256
+    
+    RETURN
+
+:calculate_expected_size
+    # Stack: [version]
+    PUSH 4
+    MUL
+    PUSH 17
+    ADD
+    RETURN
+
+:analyze_error_patterns
+    # Stack: [modules]
+    # Count error correction patterns
+    CALL count_error_patterns
+    
+    # Determine error correction level
+    CALL determine_error_level
+    
+    RETURN
+
+:analyze_pattern_noise
+    # Stack: [modules]
+    # Check pattern consistency
+    CALL check_pattern_consistency
+    
+    # Calculate noise ratio
+    CALL calculate_noise_ratio
+    
+    RETURN
+
+:serialize_qr
+    # Stack: [qr_code]
+    # Convert to byte array
+    GET modules
+    CALL modules_to_bytes
+    
+    # Add metadata
+    GET version
+    PREPEND
+    
+    GET error_level
+    APPEND
+    
+    RETURN
+
+# Adjust difficulty
+:adjust_difficulty
+    # Stack: [block_time]
+    # Check if adjustment needed
+    TIME
+    GET last_adjustment
+    SUB
+    PUSH 600    # 10 minutes
+    GT
+    IF
+        CALL calculate_new_difficulty
+        STORE current_difficulty
+        
+        TIME
+        STORE last_adjustment
+    END_IF
+    
+    RETURN
+
+:calculate_new_difficulty
+    # Stack: [block_time]
+    # Target block time is 30 seconds
+    PUSH 30
+    DIV
+    
+    GET current_difficulty
+    MUL
+    
+    # Ensure reasonable bounds
+    PUSH 1
+    MAX
+    PUSH 32
+    MIN
+    
+    RETURN
+
+# Get current difficulty
+:get_difficulty
+    GET current_difficulty
+    RETURN
+
+# Get total validated
+:get_total_validated
+    GET total_validated
+    RETURN
