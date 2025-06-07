@@ -1,0 +1,15 @@
+# Simple test program
+PUSH 10
+PUSH 5
+ADD
+PRINT   # Should print 15
+
+PUSH 20
+PUSH 8
+SUB
+PRINT   # Should print 12
+
+PUSH 6
+PUSH 7
+MUL
+PRINT   # Should print 42
