@@ -1,0 +1,290 @@
+# VentriQ Miner Reward Distribution
+# Handles mining rewards and distribution logic
+
+IMPORT "../src/blockchain.cry"
+IMPORT "../src/wallet.cry"
+IMPORT "wallet_system.cry"
+
+# Constants
+CONST INITIAL_REWARD 50000000    # 50 VQ (with 6 decimal places)
+CONST HALVING_INTERVAL 210000    # Number of blocks between reward halvings
+CONST MIN_REWARD 100000         # Minimum reward (0.1 VQ)
+CONST FEE_RATIO 0.1             # 10% of transaction fees go to miner
+
+# Reward state
+:reward_state
+    u64 current_reward
+    u64 last_halving
+    u64 total_distributed
+
+# Initialize reward system
+:init
+    # Set initial reward
+    PUSH INITIAL_REWARD
+    STORE current_reward
+    
+    # Initialize state
+    PUSH 0
+    STORE last_halving
+    STORE total_distributed
+    
+    RETURN 0
+
+# Calculate block reward
+:calculate_reward
+    # Stack: [block]
+    # Get block height
+    GET index
+    
+    # Check if halving needed
+    DUP
+    PUSH HALVING_INTERVAL
+    MOD
+    PUSH 0
+    EQ
+    IF
+        CALL perform_halving
+    END_IF
+    
+    # Get current reward
+    GET current_reward
+    
+    # Add transaction fees
+    CALL calculate_tx_fees
+    ADD
+    
+    # Ensure minimum reward
+    PUSH MIN_REWARD
+    MAX
+    
+    RETURN
+
+# Distribute mining reward
+:distribute
+    # Stack: [amount, miner_address]
+    # Verify reward amount
+    DUP
+    PUSH 0
+    GT
+    IF_NOT
+        LOG_ERROR "Invalid reward amount"
+        RETURN_ERR
+    END_IF
+    
+    # Create reward transaction
+    CALL create_reward_tx
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Add to blockchain
+    CALL blockchain:add_transaction
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Update total distributed
+    GET total_distributed
+    ADD
+    STORE total_distributed
+    
+    # Log distribution
+    PUSH_FORMAT "Distributed {} VQ to miner {}"
+        ROT     # amount
+        ROT     # address
+    END_FORMAT
+    LOG_INFO
+    
+    RETURN 0
+
+# Perform reward halving
+:perform_halving
+    # Get current reward
+    GET current_reward
+    
+    # Halve the reward
+    PUSH 2
+    DIV
+    
+    # Ensure minimum reward
+    PUSH MIN_REWARD
+    MAX
+    
+    # Store new reward
+    STORE current_reward
+    
+    # Update last halving block
+    CALL blockchain:get_height
+    STORE last_halving
+    
+    # Log halving event
+    PUSH_FORMAT "Reward halved to {} VQ"
+        GET current_reward
+    END_FORMAT
+    LOG_INFO
+    
+    RETURN
+
+# Calculate transaction fees
+:calculate_tx_fees
+    # Stack: [block]
+    # Get block transactions
+    GET transactions
+    
+    # Sum all fees
+    PUSH 0   # Initialize fee sum
+    SWAP
+    FOREACH tx
+        CALL calculate_tx_fee
+        ADD
+    END_FOREACH
+    
+    # Calculate miner's portion
+    PUSH FEE_RATIO
+    MUL
+    
+    RETURN
+
+# Calculate single transaction fee
+:calculate_tx_fee
+    # Stack: [transaction]
+    # Sum inputs
+    GET inputs
+    PUSH 0
+    SWAP
+    FOREACH input
+        GET amount
+        ADD
+    END_FOREACH
+    
+    # Sum outputs
+    GET outputs
+    PUSH 0
+    SWAP
+    FOREACH output
+        GET amount
+        ADD
+    END_FOREACH
+    
+    # Fee is difference between inputs and outputs
+    SWAP
+    SUB
+    
+    RETURN
+
+# Create reward transaction
+:create_reward_tx
+    # Stack: [amount, miner_address]
+    NEW_TRANSACTION
+        PUSH 0          # version
+        TIME            # timestamp
+        ARRAY_NEW      # empty inputs for coinbase
+        NEW_OUTPUT     # single output to miner
+            ROT        # amount
+            ROT        # miner_address
+            CALL create_output_script
+        END_OUTPUT
+        ARRAY_NEW      # Create outputs array
+        SWAP          # Put output in array
+        ARRAY_PUSH
+    END_TRANSACTION
+    
+    # Add coinbase data
+    CALL add_coinbase_data
+    
+    RETURN
+
+# Add coinbase data to transaction
+:add_coinbase_data
+    # Stack: [transaction]
+    # Create coinbase input
+    NEW_INPUT
+        PUSH 0x00     # Previous tx hash (zeros for coinbase)
+        PUSH 0xFFFFFFFF  # Output index (-1 for coinbase)
+        CALL create_coinbase_script
+    END_INPUT
+    
+    # Add to transaction inputs
+    GET inputs
+    ARRAY_PUSH
+    
+    RETURN
+
+# Create output script
+:create_output_script
+    # Stack: [address]
+    # Create P2PKH script
+    CALL wallet:create_p2pkh_script
+    RETURN
+
+# Create coinbase script
+:create_coinbase_script
+    # Create arbitrary coinbase data
+    CALL blockchain:get_height
+    PUSH "VentriQ/v1.0"
+    CONCAT
+    
+    # Add extra nonce
+    RANDOM 4
+    CONCAT
+    
+    RETURN
+
+# Get current reward
+:get_current_reward
+    GET current_reward
+    RETURN
+
+# Get total distributed
+:get_total_distributed
+    GET total_distributed
+    RETURN
+
+# Verify reward
+:verify_reward
+    # Stack: [amount, block_height]
+    # Calculate expected reward
+    CALL calculate_expected_reward
+    
+    # Compare with actual
+    EQ
+    IF_NOT
+        LOG_ERROR "Invalid reward amount"
+        RETURN 1
+    END_IF
+    
+    RETURN 0
+
+# Calculate expected reward
+:calculate_expected_reward
+    # Stack: [block_height]
+    # Calculate number of halvings
+    PUSH HALVING_INTERVAL
+    DIV
+    
+    # Calculate reward
+    PUSH INITIAL_REWARD
+    SWAP
+    PUSH 2
+    POW
+    DIV
+    
+    # Ensure minimum reward
+    PUSH MIN_REWARD
+    MAX
+    
+    RETURN
+
+# Error handlers
+:handle_error
+    LOG_ERROR "Reward distribution error"
+    RETURN_ERR
+
+# Helper functions
+:format_amount
+    # Stack: [amount]
+    # Convert to VQ units (6 decimal places)
+    PUSH 1000000
+    DIV
+    PUSH_FORMAT "{:.6f} VQ"
+    RETURN
