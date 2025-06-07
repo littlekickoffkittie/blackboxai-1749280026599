@@ -1,0 +1,62 @@
+# VentriQ Mining Test Program
+
+# Initialize block header
+PUSH "VentriQ"              # Magic bytes
+PUSH 1                      # Version
+STORE 0                     # Store version
+PUSH 0                      # Previous block hash (genesis)
+STORE 1
+PUSH "Hello VentriQ World!" # Block data
+STORE 2                     # Store at memory location 2
+
+# Set mining target (easier for testing)
+PUSH 0xFF
+PUSH 0xFF
+PUSH 0xFF
+PUSH 0x00
+STORE 3    # Store target at memory location 3
+
+# Print initial message
+PUSH "Starting VentriQ mining test..."
+PRINT
+
+# Create block header
+LOAD 0     # Version
+LOAD 1     # Previous hash
+LOAD 2     # Block data
+CONCAT     # Combine version and prev hash
+CONCAT     # Add block data
+STORE 10   # Store complete header
+
+# Start mining
+PUSH "Mining block..."
+PRINT
+
+LOAD 10    # Load block header
+LOAD 3     # Load target
+CALL qr_mine
+
+# Check mining result
+DUP
+PUSH 0
+SWAP
+SUB
+PUSH 0
+SWAP
+LOAD 3     # Load target for verification
+CALL qr_verify
+
+# Print mining result
+PUSH "Mining complete. Generating QR code..."
+PRINT
+
+# Generate and display QR code
+LOAD 10    # Load block header
+SWAP       # Swap with nonce
+CONCAT     # Combine header and nonce
+CALL qr_generate
+CALL qr_print
+
+# Print final message
+PUSH "Test complete."
+PRINT
