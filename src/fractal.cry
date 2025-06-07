@@ -1,0 +1,277 @@
+# VentriQ Fractal Module
+# Implements Sierpiński triangle fractal generation and rendering
+
+IMPORT "terminal.cry"
+IMPORT "../ext/terminal_fractal_renderer.cry"
+
+# Fractal generation constants
+CONST MIN_DEPTH 3          # Minimum fractal depth
+CONST MAX_DEPTH 7          # Maximum fractal depth for terminal display
+CONST BASE_SIZE 64         # Base size of fractal pattern
+CONST SIGIL_SIZE 16        # Size of miner's fractal sigil
+
+# Fractal character set for ASCII rendering
+CONST CHARS [" ", ".", "*", "#", "@"]
+
+# Generate a unique fractal sigil for a miner
+:generate_sigil
+    # Stack: []
+    # Generate unique seed from wallet address
+    CALL wallet:get_address
+    HASH SHA256
+    
+    # Use first 4 bytes as parameters for sigil generation
+    SPLIT 4
+    
+    # Generate small fractal pattern
+    PUSH SIGIL_SIZE
+    PUSH MIN_DEPTH
+    CALL generate_sierpinski
+    
+    # Add uniqueness markers
+    CALL add_sigil_markers
+    
+    RETURN
+
+# Generate Sierpiński triangle fractal
+:generate_sierpinski
+    # Stack: [size, depth]
+    # Validate depth
+    DUP
+    PUSH MIN_DEPTH
+    LT
+    IF
+        PUSH MIN_DEPTH
+        SWAP
+        DROP
+    END_IF
+    
+    DUP
+    PUSH MAX_DEPTH
+    GT
+    IF
+        PUSH MAX_DEPTH
+        SWAP
+        DROP
+    END_IF
+    
+    # Initialize fractal grid
+    ROT     # size
+    DUP
+    MULTIPLY    # Create square grid
+    ARRAY_NEW
+    
+    # Set initial triangle
+    CALL init_triangle
+    
+    # Recursively subdivide
+    CALL subdivide_recursive
+    
+    RETURN
+
+# Initialize base triangle
+:init_triangle
+    # Stack: [grid, size]
+    DUP
+    PUSH 2
+    DIV     # midpoint
+    
+    # Place triangle vertices
+    DUP
+    PUSH 0
+    SWAP    # top vertex
+    ARRAY_SET
+    
+    DUP
+    GET size
+    SUB 1
+    DUP     # bottom vertices
+    ARRAY_SET
+    
+    SWAP
+    GET size
+    SUB 1
+    ARRAY_SET
+    
+    RETURN
+
+# Recursive subdivision
+:subdivide_recursive
+    # Stack: [grid, depth, size]
+    DUP
+    PUSH 0
+    EQ
+    IF
+        DROP
+        RETURN
+    END_IF
+    
+    # Calculate midpoints
+    CALL calculate_midpoints
+    
+    # Recursively process sub-triangles
+    PUSH 3      # Process 3 sub-triangles
+    LOOP
+        ROT     # Rotate grid to top
+        SWAP    # depth
+        SUB 1   # Decrease depth
+        CALL subdivide_recursive
+    END_LOOP
+    
+    RETURN
+
+# Add unique markers to sigil
+:add_sigil_markers
+    # Stack: [pattern]
+    # Add unique variations based on wallet address
+    CALL wallet:get_address
+    HASH SHA256
+    SPLIT 8     # Use 8 bytes for variations
+    
+    # Apply variations to pattern
+    CALL apply_variations
+    
+    RETURN
+
+# Render fractal pattern
+:render
+    # Stack: [pattern, size]
+    # Convert fractal pattern to ASCII art
+    CALL pattern_to_ascii
+    
+    # Apply terminal colors
+    CALL terminal:apply_colors
+    
+    # Draw to terminal
+    CALL terminal:draw_pattern
+    
+    RETURN
+
+# Verify fractal sigil
+:verify_sigil
+    # Stack: [sigil]
+    # Verify sigil structure
+    CALL verify_sigil_structure
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify sigil markers
+    CALL verify_sigil_markers
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Helper functions
+:pattern_to_ascii
+    # Stack: [pattern, size]
+    # Convert binary pattern to ASCII characters
+    FOREACH cell
+        PUSH CHARS
+        SWAP
+        MOD 5      # Use modulo to select character
+        ARRAY_GET
+    END_FOREACH
+    
+    RETURN
+
+:calculate_midpoints
+    # Stack: [points]
+    # Calculate midpoints between vertices
+    DUP
+    GET 0   # First vertex
+    SWAP
+    GET 1   # Second vertex
+    ADD
+    PUSH 2
+    DIV     # Midpoint
+    
+    # Store midpoint
+    ROT
+    ARRAY_PUSH
+    
+    RETURN
+
+:verify_sigil_structure
+    # Stack: [sigil]
+    # Verify sigil size
+    DUP
+    ARRAY_LEN
+    PUSH SIGIL_SIZE
+    EQ
+    IF_NOT
+        RETURN 1
+    END_IF
+    
+    # Verify pattern structure
+    CALL verify_pattern
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:verify_sigil_markers
+    # Stack: [sigil]
+    # Verify unique markers
+    CALL extract_markers
+    CALL verify_markers
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:apply_variations
+    # Stack: [pattern, variations]
+    # Apply unique variations to pattern
+    FOREACH var
+        DUP
+        PUSH 0xFF
+        AND     # Get last 8 bits
+        SWAP
+        ROT     # pattern
+        CALL apply_variation
+    END_FOREACH
+    
+    RETURN
+
+# Draw fractal block header
+:draw_block_header
+    # Stack: [block]
+    # Extract block data for visualization
+    DUP
+    GET index
+    SWAP
+    GET hash
+    
+    # Generate fractal pattern
+    PUSH BASE_SIZE
+    PUSH 5       # Medium depth
+    CALL generate_sierpinski
+    
+    # Add block data markers
+    CALL add_block_markers
+    
+    # Render to terminal
+    CALL terminal_fractal_renderer:render_block_header
+    
+    RETURN
+
+# Animation functions for mining progress
+:animate_mining_progress
+    # Stack: [progress]
+    # Generate animated fractal based on mining progress
+    PUSH BASE_SIZE
+    PUSH 4       # Lower depth for animation
+    CALL generate_sierpinski
+    
+    # Apply progress animation
+    CALL apply_progress_animation
+    
+    # Render animation frame
+    CALL terminal_fractal_renderer:render_animation_frame
+    
+    RETURN
