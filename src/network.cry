@@ -1,0 +1,401 @@
+# VentriQ Network Module
+# Implements P2P networking and message propagation
+
+IMPORT "../ext/peer_discovery.cry"
+IMPORT "../ext/gossip_protocol.cry"
+IMPORT "../ext/node_heartbeat_system.cry"
+
+# Network constants
+CONST MAX_PEERS 50
+CONST PING_INTERVAL 30000      # 30 seconds
+CONST MESSAGE_TIMEOUT 5000     # 5 seconds
+CONST MAX_MESSAGE_SIZE 1048576 # 1MB
+
+# Message types
+CONST MSG_HANDSHAKE 0x01
+CONST MSG_BLOCK 0x02
+CONST MSG_TX 0x03
+CONST MSG_PEERS 0x04
+CONST MSG_PING 0x05
+CONST MSG_PONG 0x06
+CONST MSG_GET_BLOCKS 0x07
+CONST MSG_GET_TX 0x08
+
+# Network state
+:network_state
+    array peers           # Array of connected peers
+    u64   last_ping      # Timestamp of last ping
+    bool  is_connected   # Network connection status
+    u16   port          # Listen port
+    str   node_id       # Unique node identifier
+
+# Initialize network
+:init
+    # Stack: [port]
+    STORE port
+    
+    # Generate unique node ID
+    TIME
+    CALL wallet:get_address
+    CONCAT
+    HASH SHA256
+    STORE node_id
+    
+    # Initialize peer list
+    ARRAY_NEW
+    STORE peers
+    
+    # Start network services
+    CALL start_listener
+    IF_ERR
+        LOG_ERROR "Failed to start network listener"
+        RETURN_ERR
+    END_IF
+    
+    # Initialize peer discovery
+    CALL peer_discovery:init
+    IF_ERR
+        LOG_ERROR "Failed to initialize peer discovery"
+        RETURN_ERR
+    END_IF
+    
+    # Start heartbeat system
+    CALL node_heartbeat:init
+    
+    PUSH true
+    STORE is_connected
+    
+    TIME
+    STORE last_ping
+    
+    LOG_INFO "Network initialized successfully"
+    RETURN 0
+
+# Start network listener
+:start_listener
+    # Stack: []
+    GET port
+    SOCKET_LISTEN
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Spawn connection handler
+    SPAWN handle_connections
+    
+    RETURN 0
+
+# Handle incoming connections
+:handle_connections
+    WHILE true
+        # Accept new connection
+        SOCKET_ACCEPT
+        IF_ERR
+            CONTINUE
+        END_IF
+        
+        # Spawn handler for this connection
+        SPAWN handle_connection
+    END_WHILE
+
+# Handle single connection
+:handle_connection
+    # Stack: [socket]
+    # Perform handshake
+    CALL perform_handshake
+    IF_ERR
+        SOCKET_CLOSE
+        RETURN_ERR
+    END_IF
+    
+    # Add to peer list if not full
+    GET peers
+    ARRAY_LEN
+    PUSH MAX_PEERS
+    LT
+    IF
+        CALL add_peer
+    ELSE
+        SOCKET_CLOSE
+        RETURN 1
+    END_IF
+    
+    # Handle messages from this peer
+    WHILE true
+        CALL receive_message
+        IF_ERR
+            BREAK
+        END_IF
+        
+        CALL handle_message
+    END_WHILE
+    
+    # Clean up
+    CALL remove_peer
+    SOCKET_CLOSE
+    
+    RETURN 0
+
+# Perform handshake with new peer
+:perform_handshake
+    # Stack: [socket]
+    # Send handshake
+    NEW_MESSAGE
+        PUSH MSG_HANDSHAKE
+        GET node_id
+        GET blockchain:latest_hash
+    END_MESSAGE
+    
+    CALL send_message
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Receive handshake
+    CALL receive_message
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify handshake
+    CALL verify_handshake
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Send message to peer
+:send_message
+    # Stack: [socket, message]
+    # Add message header
+    CALL create_message_header
+    PREPEND
+    
+    # Send with timeout
+    PUSH MESSAGE_TIMEOUT
+    SOCKET_SEND_TIMEOUT
+    
+    RETURN
+
+# Receive message from peer
+:receive_message
+    # Stack: [socket]
+    # Receive header first
+    PUSH 8  # Header size
+    PUSH MESSAGE_TIMEOUT
+    SOCKET_RECV_TIMEOUT
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Parse header
+    CALL parse_message_header
+    # Stack now has message size
+    
+    # Receive message body
+    PUSH MESSAGE_TIMEOUT
+    SOCKET_RECV_TIMEOUT
+    
+    RETURN
+
+# Handle received message
+:handle_message
+    # Stack: [message]
+    # Extract message type
+    DUP
+    GET type
+    
+    # Handle different message types
+    SWITCH
+        CASE MSG_BLOCK
+            CALL handle_block_message
+        END_CASE
+        
+        CASE MSG_TX
+            CALL handle_tx_message
+        END_CASE
+        
+        CASE MSG_PEERS
+            CALL handle_peers_message
+        END_CASE
+        
+        CASE MSG_PING
+            CALL handle_ping_message
+        END_CASE
+        
+        CASE MSG_PONG
+            CALL handle_pong_message
+        END_CASE
+        
+        CASE MSG_GET_BLOCKS
+            CALL handle_get_blocks_message
+        END_CASE
+        
+        CASE MSG_GET_TX
+            CALL handle_get_tx_message
+        END_CASE
+        
+        DEFAULT
+            LOG_ERROR "Unknown message type"
+            RETURN 1
+        END_DEFAULT
+    END_SWITCH
+    
+    RETURN 0
+
+# Broadcast message to all peers
+:broadcast
+    # Stack: [message]
+    GET peers
+    FOREACH peer
+        DUP         # Duplicate message for each peer
+        ROT         # Peer socket
+        CALL send_message
+        IF_ERR
+            LOG_ERROR "Failed to send to peer"
+            CONTINUE
+        END_IF
+    END_FOREACH
+    
+    RETURN 0
+
+# Process network messages
+:process_messages
+    # Check for new messages
+    GET peers
+    FOREACH peer
+        DUP
+        SOCKET_HAS_DATA
+        IF
+            CALL receive_message
+            IF_SUCCESS
+                CALL handle_message
+            END_IF
+        END_IF
+    END_FOREACH
+    
+    # Check if ping needed
+    TIME
+    GET last_ping
+    SUB
+    PUSH PING_INTERVAL
+    GT
+    IF
+        CALL send_ping
+        TIME
+        STORE last_ping
+    END_IF
+    
+    RETURN 0
+
+# Shutdown network
+:shutdown
+    # Close all peer connections
+    GET peers
+    FOREACH peer
+        SOCKET_CLOSE
+    END_FOREACH
+    
+    # Stop listener
+    SOCKET_CLOSE_LISTENER
+    
+    PUSH false
+    STORE is_connected
+    
+    LOG_INFO "Network shutdown complete"
+    RETURN 0
+
+# Helper functions
+:create_message_header
+    # Stack: [message]
+    # Create header with size and checksum
+    DUP
+    STR_LEN         # Message size
+    SWAP
+    HASH SHA256     # Message checksum
+    PACK           # Pack into header structure
+    RETURN
+
+:parse_message_header
+    # Stack: [header_bytes]
+    # Unpack header into size and checksum
+    UNPACK
+    RETURN
+
+:verify_handshake
+    # Stack: [handshake_message]
+    # Verify protocol version and network ID
+    CALL verify_protocol_version
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:add_peer
+    # Stack: [socket, peer_info]
+    GET peers
+    ARRAY_PUSH
+    RETURN
+
+:remove_peer
+    # Stack: [socket]
+    GET peers
+    ARRAY_REMOVE
+    RETURN
+
+# Message handlers
+:handle_block_message
+    # Verify and process new block
+    CALL blockchain:validate_block
+    IF_SUCCESS
+        CALL blockchain:add_block
+        IF_SUCCESS
+            # Propagate to other peers
+            CALL gossip:propagate_block
+        END_IF
+    END_IF
+    RETURN
+
+:handle_tx_message
+    # Verify and process new transaction
+    CALL wallet:verify_transaction
+    IF_SUCCESS
+        CALL wallet:add_transaction
+        IF_SUCCESS
+            # Propagate to other peers
+            CALL gossip:propagate_transaction
+        END_IF
+    END_IF
+    RETURN
+
+:handle_peers_message
+    # Update peer list
+    CALL peer_discovery:update_peers
+    RETURN
+
+:handle_ping_message
+    # Respond with pong
+    NEW_MESSAGE
+        PUSH MSG_PONG
+        GET node_id
+    END_MESSAGE
+    CALL send_message
+    RETURN
+
+:handle_pong_message
+    # Update peer lastSeen
+    TIME
+    ROT     # peer
+    CALL update_peer_timestamp
+    RETURN
+
+:send_ping
+    # Broadcast ping to all peers
+    NEW_MESSAGE
+        PUSH MSG_PING
+        GET node_id
+    END_MESSAGE
+    CALL broadcast
+    RETURN
