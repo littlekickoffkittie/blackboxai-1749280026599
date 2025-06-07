@@ -1,0 +1,424 @@
+# VentriQ Gossip Protocol
+# Implements efficient message propagation across the network
+
+IMPORT "../src/network.cry"
+IMPORT "node_heartbeat_system.cry"
+
+# Constants
+CONST MAX_MESSAGE_SIZE 1048576  # 1MB
+CONST PROPAGATION_DELAY 100    # 100ms between forwards
+CONST CACHE_TIMEOUT 3600      # 1 hour message cache
+CONST MAX_CACHE_SIZE 10000    # Maximum cached messages
+CONST FANOUT 3               # Number of peers to forward to
+
+# Message types
+ENUM MessageType
+    BLOCK
+    TRANSACTION
+    HEARTBEAT
+    PEER_DISCOVERY
+    ALERT
+END
+
+# Message structure
+STRUCT GossipMessage
+    u32     type
+    bytes32 message_id
+    u64     timestamp
+    u32     ttl
+    u32     hop_count
+    bytes   payload
+    bytes   signature
+END
+
+# Protocol state
+:protocol_state
+    array   message_cache    # Recently seen messages
+    u64     last_cleanup
+    bool    is_active
+    u32     messages_processed
+    u32     messages_forwarded
+
+# Initialize protocol
+:init
+    # Initialize cache
+    ARRAY_NEW
+    STORE message_cache
+    
+    TIME
+    STORE last_cleanup
+    
+    PUSH false
+    STORE is_active
+    
+    PUSH 0
+    STORE messages_processed
+    STORE messages_forwarded
+    
+    RETURN 0
+
+# Start protocol
+:start
+    PUSH true
+    STORE is_active
+    
+    # Start maintenance loop
+    SPAWN maintenance_loop
+    
+    LOG_INFO "Gossip protocol started"
+    RETURN 0
+
+# Stop protocol
+:stop
+    PUSH false
+    STORE is_active
+    
+    LOG_INFO "Gossip protocol stopped"
+    RETURN 0
+
+# Process incoming message
+:process_message
+    # Stack: [message]
+    # Validate message
+    CALL validate_message
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Check if already seen
+    CALL check_cache
+    IF_SUCCESS
+        RETURN 1
+    END_IF
+    
+    # Process based on type
+    GET type
+    SWITCH
+        CASE BLOCK
+            CALL handle_block_message
+        END_CASE
+        
+        CASE TRANSACTION
+            CALL handle_transaction_message
+        END_CASE
+        
+        CASE HEARTBEAT
+            CALL handle_heartbeat_message
+        END_CASE
+        
+        CASE PEER_DISCOVERY
+            CALL handle_discovery_message
+        END_CASE
+        
+        CASE ALERT
+            CALL handle_alert_message
+        END_CASE
+        
+        DEFAULT
+            LOG_ERROR "Unknown message type"
+            RETURN 1
+        END_DEFAULT
+    END_SWITCH
+    
+    # Add to cache
+    CALL add_to_cache
+    
+    # Forward message
+    CALL forward_message
+    
+    # Update statistics
+    GET messages_processed
+    ADD 1
+    STORE messages_processed
+    
+    RETURN 0
+
+# Broadcast message
+:broadcast_message
+    # Stack: [type, payload]
+    # Create message
+    CALL create_message
+    
+    # Sign message
+    CALL sign_message
+    
+    # Add to cache
+    CALL add_to_cache
+    
+    # Forward to peers
+    CALL forward_to_peers
+    
+    RETURN 0
+
+# Maintenance loop
+:maintenance_loop
+    WHILE GET is_active
+        # Clean up old messages
+        CALL cleanup_cache
+        
+        # Sleep
+        PUSH 60000   # 1 minute
+        SLEEP
+    END_WHILE
+    RETURN
+
+# Message handling
+:handle_block_message
+    # Stack: [message]
+    # Extract block
+    GET payload
+    
+    # Process block
+    CALL blockchain:process_block
+    
+    RETURN
+
+:handle_transaction_message
+    # Stack: [message]
+    # Extract transaction
+    GET payload
+    
+    # Process transaction
+    CALL wallet:process_transaction
+    
+    RETURN
+
+:handle_heartbeat_message
+    # Stack: [message]
+    # Extract heartbeat
+    GET payload
+    
+    # Process heartbeat
+    CALL node_heartbeat:handle_heartbeat
+    
+    RETURN
+
+:handle_discovery_message
+    # Stack: [message]
+    # Extract peer info
+    GET payload
+    
+    # Process peer discovery
+    CALL peer_discovery:process_peer_info
+    
+    RETURN
+
+:handle_alert_message
+    # Stack: [message]
+    # Extract alert
+    GET payload
+    
+    # Process alert
+    CALL process_alert
+    
+    RETURN
+
+# Message creation and validation
+:create_message
+    # Stack: [type, payload]
+    NEW_MESSAGE
+        ROT     # type
+        CALL generate_message_id
+        TIME
+        PUSH 10 # TTL
+        PUSH 0  # hop_count
+        ROT     # payload
+        PUSH "" # empty signature
+    END_MESSAGE
+    
+    RETURN
+
+:validate_message
+    # Stack: [message]
+    # Check size
+    DUP
+    STR_LEN
+    PUSH MAX_MESSAGE_SIZE
+    GT
+    IF
+        RETURN 1
+    END_IF
+    
+    # Verify signature
+    CALL verify_signature
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Check TTL and hop count
+    GET ttl
+    PUSH 0
+    LE
+    IF
+        RETURN 2
+    END_IF
+    
+    GET hop_count
+    GET ttl
+    GT
+    IF
+        RETURN 3
+    END_IF
+    
+    RETURN 0
+
+# Cache management
+:check_cache
+    # Stack: [message_id]
+    GET message_cache
+    ARRAY_CONTAINS
+    RETURN
+
+:add_to_cache
+    # Stack: [message]
+    # Check cache size
+    GET message_cache
+    ARRAY_LEN
+    PUSH MAX_CACHE_SIZE
+    GE
+    IF
+        CALL remove_oldest_message
+    END_IF
+    
+    # Add to cache
+    GET message_cache
+    ARRAY_PUSH
+    
+    RETURN
+
+:cleanup_cache
+    TIME
+    GET message_cache
+    FOREACH message
+        # Remove old messages
+        GET timestamp
+        SUB
+        PUSH CACHE_TIMEOUT
+        GT
+        IF
+            ARRAY_REMOVE
+        END_IF
+    END_FOREACH
+    
+    TIME
+    STORE last_cleanup
+    
+    RETURN
+
+# Message forwarding
+:forward_message
+    # Stack: [message]
+    # Increment hop count
+    GET hop_count
+    ADD 1
+    STORE_FIELD hop_count
+    
+    # Select peers to forward to
+    CALL select_forward_peers
+    
+    # Forward to selected peers
+    FOREACH peer
+        CALL network:send_message
+        IF_SUCCESS
+            GET messages_forwarded
+            ADD 1
+            STORE messages_forwarded
+        END_IF
+        
+        # Add delay between forwards
+        PUSH PROPAGATION_DELAY
+        SLEEP
+    END_FOREACH
+    
+    RETURN
+
+:select_forward_peers
+    # Get random subset of peers
+    CALL network:get_peers
+    CALL select_random_peers
+    RETURN
+
+# Helper functions
+:generate_message_id
+    # Stack: [type, payload]
+    CONCAT
+    TIME
+    CONCAT
+    HASH SHA256
+    RETURN
+
+:sign_message
+    # Stack: [message]
+    # Create signature
+    CALL create_signature
+    
+    # Add to message
+    STORE_FIELD signature
+    
+    RETURN
+
+:verify_signature
+    # Stack: [message]
+    GET signature
+    SWAP
+    CALL verify_message_signature
+    RETURN
+
+:remove_oldest_message
+    GET message_cache
+    PUSH 0
+    ARRAY_REMOVE
+    RETURN
+
+:select_random_peers
+    # Stack: [peers]
+    # Select FANOUT random peers
+    PUSH FANOUT
+    CALL random_sample
+    RETURN
+
+# Convenience methods for common message types
+:broadcast_block
+    # Stack: [block]
+    PUSH MessageType:BLOCK
+    SWAP
+    CALL broadcast_message
+    RETURN
+
+:broadcast_transaction
+    # Stack: [transaction]
+    PUSH MessageType:TRANSACTION
+    SWAP
+    CALL broadcast_message
+    RETURN
+
+:broadcast_heartbeat
+    # Stack: [heartbeat]
+    PUSH MessageType:HEARTBEAT
+    SWAP
+    CALL broadcast_message
+    RETURN
+
+:broadcast_discovery
+    # Stack: [peer_info]
+    PUSH MessageType:PEER_DISCOVERY
+    SWAP
+    CALL broadcast_message
+    RETURN
+
+:broadcast_alert
+    # Stack: [alert]
+    PUSH MessageType:ALERT
+    SWAP
+    CALL broadcast_message
+    RETURN
+
+# Get protocol statistics
+:get_stats
+    NEW_STATS
+        GET messages_processed
+        GET messages_forwarded
+        GET message_cache
+        ARRAY_LEN
+    END_STATS
+    RETURN
