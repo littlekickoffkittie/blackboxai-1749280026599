@@ -1,0 +1,266 @@
+# VentriQ Wallet System Extension
+# Provides core wallet functionality and key management
+
+IMPORT "std::crypto"
+IMPORT "std::memory"
+
+# Constants
+CONST KEY_SIZE 32
+CONST SALT_SIZE 16
+CONST IV_SIZE 16
+CONST PBKDF2_ITERATIONS 100000
+
+# Wallet data structure
+STRUCT WalletData
+    bytes   private_key
+    bytes   public_key
+    bytes   address
+    bytes   salt
+    bytes   iv
+    bytes   encrypted_data
+    bytes   fractal_sigil
+END
+
+# Initialize wallet system
+:init
+    # Initialize secure memory
+    CALL secure_memory:init
+    IF_ERR
+        LOG_ERROR "Failed to initialize secure memory"
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Generate new keypair
+:generate_keypair
+    # Generate secure random bytes for private key
+    PUSH KEY_SIZE
+    RANDOM
+    
+    # Add fractal entropy
+    CALL fractal:generate_entropy
+    XOR
+    
+    # Generate private key
+    HASH SHA256
+    
+    # Generate public key
+    DUP
+    CALL crypto:generate_public_key
+    
+    # Create wallet data
+    NEW_WALLET_DATA
+        ROT     # private_key
+        ROT     # public_key
+        CALL generate_address
+        CALL generate_salt
+        CALL generate_iv
+        PUSH "" # empty encrypted data
+        CALL fractal:generate_sigil
+    END_WALLET_DATA
+    
+    RETURN
+
+# Load wallet
+:load
+    # Stack: [password]
+    # Verify password
+    CALL verify_password
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Decrypt wallet data
+    CALL decrypt_wallet
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN
+
+# Save wallet
+:save
+    # Stack: [wallet_data, password]
+    # Encrypt wallet data
+    CALL encrypt_wallet
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Save to storage
+    CALL storage:save_wallet
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Check if wallet exists
+:check_exists
+    CALL storage:wallet_exists
+    RETURN
+
+# Sign data
+:sign
+    # Stack: [data, private_key]
+    # Sign using ECDSA
+    CALL crypto:sign_ecdsa
+    
+    # Add fractal signature
+    CALL create_fractal_signature
+    
+    # Combine signatures
+    CONCAT
+    
+    RETURN
+
+# Verify signature
+:verify_signature
+    # Stack: [data, signature, public_key]
+    # Split combined signature
+    CALL split_signature
+    
+    # Verify ECDSA signature
+    CALL crypto:verify_ecdsa
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify fractal signature
+    CALL verify_fractal_signature
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Helper functions
+:generate_salt
+    PUSH SALT_SIZE
+    RANDOM
+    RETURN
+
+:generate_iv
+    PUSH IV_SIZE
+    RANDOM
+    RETURN
+
+:encrypt_wallet
+    # Stack: [wallet_data, password]
+    # Generate encryption key from password
+    CALL generate_key_from_password
+    
+    # Encrypt wallet data
+    CALL crypto:encrypt_aes256
+    
+    RETURN
+
+:decrypt_wallet
+    # Stack: [encrypted_data, password]
+    # Generate decryption key from password
+    CALL generate_key_from_password
+    
+    # Decrypt wallet data
+    CALL crypto:decrypt_aes256
+    
+    RETURN
+
+:generate_key_from_password
+    # Stack: [password, salt]
+    PUSH PBKDF2_ITERATIONS
+    CALL crypto:pbkdf2_sha256
+    RETURN
+
+:verify_password
+    # Stack: [password]
+    # Load encrypted check data
+    CALL storage:load_check_data
+    
+    # Attempt decryption
+    CALL decrypt_check_data
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:create_fractal_signature
+    # Stack: [data]
+    # Generate fractal pattern from data
+    CALL fractal:generate_pattern
+    
+    # Add temporal binding
+    TIME
+    CALL add_temporal_binding
+    
+    RETURN
+
+:verify_fractal_signature
+    # Stack: [signature]
+    # Verify pattern structure
+    CALL fractal:verify_pattern
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Verify temporal binding
+    CALL verify_temporal_binding
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:split_signature
+    # Stack: [combined_signature]
+    # Split into ECDSA and fractal signatures
+    PUSH 64     # ECDSA signature length
+    SPLIT
+    RETURN
+
+# Secure memory operations
+:secure_alloc
+    # Allocate secure memory page
+    PUSH 4096   # Page size
+    CALL memory:secure_alloc
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Lock memory
+    CALL memory:lock_page
+    
+    RETURN
+
+:secure_free
+    # Stack: [ptr]
+    # Zero memory
+    CALL memory:secure_zero
+    
+    # Unlock page
+    CALL memory:unlock_page
+    
+    # Free memory
+    CALL memory:free
+    
+    RETURN
+
+# Error handlers
+:handle_error
+    # Log error
+    LOG_ERROR "Wallet system error"
+    
+    # Clean up sensitive data
+    CALL cleanup_sensitive
+    
+    RETURN_ERR
+
+:cleanup_sensitive
+    # Zero out sensitive memory
+    CALL memory:secure_zero_all
+    
+    # Reset wallet state
+    CALL reset_state
+    
+    RETURN
