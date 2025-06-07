@@ -1,0 +1,368 @@
+# VentriQ Terminal Fractal Renderer
+# Advanced fractal pattern rendering for terminal display
+
+IMPORT "../src/terminal.cry"
+IMPORT "../src/fractal.cry"
+
+# Constants
+CONST MIN_WIDTH 40
+CONST MAX_WIDTH 120
+CONST MIN_HEIGHT 20
+CONST MAX_HEIGHT 40
+CONST ANIMATION_DELAY 50  # milliseconds
+
+# Character sets for different density levels
+CONST CHARS_LIGHT  [" ", ".", ":", "-", "=", "+", "*", "#", "@"]
+CONST CHARS_MEDIUM [" ", "░", "▒", "▓", "█"]
+CONST CHARS_HEAVY  ["█", "▓", "▒", "░", " "]
+
+# Color schemes
+CONST COLORS [
+    "\x1b[36m",  # Cyan
+    "\x1b[34m",  # Blue
+    "\x1b[35m",  # Magenta
+    "\x1b[37m"   # White
+]
+
+# Renderer state
+:renderer_state
+    u32 width
+    u32 height
+    u32 depth
+    str char_set
+    str color_scheme
+    bool animation_active
+
+# Initialize renderer
+:init
+    # Get terminal size
+    CALL terminal:get_size
+    
+    # Set initial dimensions
+    PUSH MIN_WIDTH
+    MAX
+    PUSH MAX_WIDTH
+    MIN
+    STORE width
+    
+    PUSH MIN_HEIGHT
+    MAX
+    PUSH MAX_HEIGHT
+    MIN
+    STORE height
+    
+    # Set default style
+    PUSH CHARS_MEDIUM
+    STORE char_set
+    
+    PUSH COLORS
+    PUSH 0
+    ARRAY_GET
+    STORE color_scheme
+    
+    PUSH false
+    STORE animation_active
+    
+    RETURN 0
+
+# Render fractal pattern
+:render_pattern
+    # Stack: [pattern, options]
+    # Save cursor position
+    PRINT "\x1b[s"
+    
+    # Apply color scheme
+    GET color_scheme
+    PRINT
+    
+    # Calculate dimensions
+    CALL calculate_dimensions
+    
+    # Draw border
+    CALL draw_border
+    
+    # Render pattern
+    CALL render_sierpinski
+    
+    # Reset color
+    PRINT "\x1b[0m"
+    
+    # Restore cursor position
+    PRINT "\x1b[u"
+    
+    RETURN
+
+# Render animated pattern
+:render_animation
+    # Stack: [pattern, frames]
+    PUSH true
+    STORE animation_active
+    
+    LOOP
+        # Clear previous frame
+        CALL clear_frame
+        
+        # Render current frame
+        CALL render_pattern
+        
+        # Delay between frames
+        PUSH ANIMATION_DELAY
+        SLEEP
+        
+        # Check if animation should continue
+        GET animation_active
+        IF_NOT
+            BREAK
+        END_IF
+        
+        # Update pattern for next frame
+        CALL update_pattern
+    END_LOOP
+    
+    RETURN
+
+# Render block header
+:render_block_header
+    # Stack: [block]
+    # Extract block data for visualization
+    DUP
+    GET index
+    SWAP
+    GET hash
+    
+    # Generate fractal pattern
+    CALL generate_block_pattern
+    
+    # Set special rendering options
+    NEW_OPTIONS
+        PUSH true    # show_border
+        PUSH true    # show_info
+        GET color_scheme
+    END_OPTIONS
+    
+    # Render pattern
+    CALL render_pattern
+    
+    RETURN
+
+# Render mining progress
+:render_mining_progress
+    # Stack: [progress]
+    # Generate progress pattern
+    CALL generate_progress_pattern
+    
+    # Set animation options
+    NEW_OPTIONS
+        PUSH false   # show_border
+        PUSH true    # show_progress
+        GET color_scheme
+    END_OPTIONS
+    
+    # Start animation
+    CALL render_animation
+    
+    RETURN
+
+# Helper functions
+:calculate_dimensions
+    # Stack: [pattern]
+    # Get pattern size
+    ARRAY_LEN
+    SQRT
+    
+    # Scale to terminal size
+    GET width
+    MIN
+    DUP
+    STORE width
+    
+    GET height
+    MIN
+    STORE height
+    
+    RETURN
+
+:draw_border
+    # Draw top border
+    PUSH "╔"
+    PRINT
+    
+    GET width
+    PUSH "═"
+    MULTIPLY
+    PRINT
+    
+    PUSH "╗\n"
+    PRINT
+    
+    # Draw side borders
+    GET height
+    LOOP
+        PUSH "║"
+        PRINT
+        
+        # Draw pattern line
+        CALL draw_pattern_line
+        
+        PUSH "║\n"
+        PRINT
+    END_LOOP
+    
+    # Draw bottom border
+    PUSH "╚"
+    PRINT
+    
+    GET width
+    PUSH "═"
+    MULTIPLY
+    PRINT
+    
+    PUSH "╝\n"
+    PRINT
+    
+    RETURN
+
+:render_sierpinski
+    # Stack: [pattern]
+    # Calculate initial triangle
+    CALL calculate_triangle
+    
+    # Render recursively
+    GET depth
+    CALL render_recursive
+    
+    RETURN
+
+:render_recursive
+    # Stack: [depth, points]
+    DUP
+    PUSH 0
+    EQ
+    IF
+        DROP
+        CALL render_triangle
+        RETURN
+    END_IF
+    
+    # Calculate sub-triangles
+    CALL calculate_sub_triangles
+    
+    # Render each sub-triangle
+    PUSH 3
+    LOOP
+        SUB 1
+        CALL render_recursive
+    END_LOOP
+    
+    RETURN
+
+:render_triangle
+    # Stack: [points]
+    # Get character based on density
+    CALL calculate_density
+    GET char_set
+    SWAP
+    ARRAY_GET
+    
+    # Draw triangle
+    CALL draw_triangle
+    
+    RETURN
+
+:calculate_density
+    # Stack: [points]
+    # Count filled points
+    PUSH 0
+    SWAP
+    FOREACH point
+        ADD
+    END_FOREACH
+    
+    # Calculate density
+    GET char_set
+    ARRAY_LEN
+    DIV
+    
+    RETURN
+
+:clear_frame
+    # Move cursor to start position
+    PRINT "\x1b[H"
+    
+    # Clear frame area
+    GET height
+    LOOP
+        PUSH " "
+        GET width
+        MULTIPLY
+        PRINT
+        PUSH "\n"
+        PRINT
+    END_LOOP
+    
+    RETURN
+
+:update_pattern
+    # Stack: [pattern]
+    # Update pattern for animation
+    CALL calculate_next_frame
+    
+    RETURN
+
+:generate_block_pattern
+    # Stack: [block_hash]
+    # Generate unique pattern from hash
+    CALL fractal:generate_from_hash
+    
+    # Add block-specific variations
+    CALL add_block_variations
+    
+    RETURN
+
+:generate_progress_pattern
+    # Stack: [progress]
+    # Generate pattern based on progress
+    CALL fractal:generate_progress
+    
+    # Add animation elements
+    CALL add_animation_elements
+    
+    RETURN
+
+# Style management
+:set_char_set
+    # Stack: [char_set_name]
+    SWITCH
+        CASE "light"
+            PUSH CHARS_LIGHT
+        END_CASE
+        
+        CASE "medium"
+            PUSH CHARS_MEDIUM
+        END_CASE
+        
+        CASE "heavy"
+            PUSH CHARS_HEAVY
+        END_CASE
+        
+        DEFAULT
+            PUSH CHARS_MEDIUM
+        END_DEFAULT
+    END_SWITCH
+    
+    STORE char_set
+    RETURN
+
+:set_color_scheme
+    # Stack: [index]
+    PUSH COLORS
+    SWAP
+    ARRAY_GET
+    STORE color_scheme
+    RETURN
+
+# Stop animation
+:stop_animation
+    PUSH false
+    STORE animation_active
+    RETURN
