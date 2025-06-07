@@ -1,0 +1,406 @@
+# VentriQ Node Module
+# Coordinates node activities and system integration
+
+IMPORT "../ext/node_heartbeat_system.cry"
+IMPORT "../ext/gossip_protocol.cry"
+IMPORT "../ext/peer_discovery.cry"
+
+# Node constants
+CONST NODE_VERSION "1.0.0"
+CONST MIN_PEERS 3
+CONST MAX_PEERS 50
+CONST HEARTBEAT_INTERVAL 30000  # 30 seconds
+CONST SYNC_INTERVAL 300000      # 5 minutes
+CONST CLEANUP_INTERVAL 3600000  # 1 hour
+
+# Node state
+:node_state
+    bool    is_running
+    bool    is_syncing
+    u64     start_time
+    u64     last_heartbeat
+    u64     last_sync
+    u64     last_cleanup
+    str     status
+    u32     peer_count
+    bool    is_mining
+
+# Initialize node
+:init
+    # Initialize node state
+    PUSH false
+    STORE is_running
+    STORE is_syncing
+    
+    TIME
+    STORE start_time
+    STORE last_heartbeat
+    STORE last_sync
+    STORE last_cleanup
+    
+    PUSH "Initializing"
+    STORE status
+    
+    PUSH 0
+    STORE peer_count
+    
+    PUSH false
+    STORE is_mining
+    
+    # Initialize subsystems
+    CALL init_subsystems
+    IF_ERR
+        LOG_ERROR "Failed to initialize node subsystems"
+        RETURN_ERR
+    END_IF
+    
+    LOG_INFO "Node initialization complete"
+    RETURN 0
+
+# Start node
+:start
+    PUSH true
+    STORE is_running
+    
+    # Start subsystems
+    CALL start_subsystems
+    IF_ERR
+        LOG_ERROR "Failed to start node subsystems"
+        RETURN_ERR
+    END_IF
+    
+    # Enter main loop
+    SPAWN node_loop
+    
+    PUSH "Running"
+    STORE status
+    
+    LOG_INFO "Node started successfully"
+    RETURN 0
+
+# Stop node
+:stop
+    PUSH false
+    STORE is_running
+    
+    # Stop subsystems
+    CALL stop_subsystems
+    
+    PUSH "Stopped"
+    STORE status
+    
+    LOG_INFO "Node stopped"
+    RETURN 0
+
+# Main node loop
+:node_loop
+    WHILE GET is_running
+        # Process periodic tasks
+        CALL process_heartbeat
+        CALL process_sync
+        CALL process_cleanup
+        
+        # Check mining status
+        CALL check_mining_status
+        
+        # Process network messages
+        CALL network:process_messages
+        
+        # Update node status
+        CALL update_status
+        
+        # Small delay to prevent CPU overload
+        SLEEP 100
+    END_WHILE
+    RETURN
+
+# Initialize subsystems
+:init_subsystems
+    # Initialize heartbeat system
+    CALL node_heartbeat:init
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Initialize gossip protocol
+    CALL gossip:init
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Initialize peer discovery
+    CALL peer_discovery:init
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Start subsystems
+:start_subsystems
+    # Start heartbeat system
+    CALL node_heartbeat:start
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Start gossip protocol
+    CALL gossip:start
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Start peer discovery
+    CALL peer_discovery:start
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Stop subsystems
+:stop_subsystems
+    # Stop heartbeat system
+    CALL node_heartbeat:stop
+    
+    # Stop gossip protocol
+    CALL gossip:stop
+    
+    # Stop peer discovery
+    CALL peer_discovery:stop
+    
+    RETURN 0
+
+# Process heartbeat
+:process_heartbeat
+    TIME
+    GET last_heartbeat
+    SUB
+    PUSH HEARTBEAT_INTERVAL
+    GT
+    IF
+        # Send heartbeat
+        CALL node_heartbeat:send
+        
+        TIME
+        STORE last_heartbeat
+        
+        # Update peer count
+        CALL network:get_peer_count
+        STORE peer_count
+    END_IF
+    RETURN
+
+# Process blockchain sync
+:process_sync
+    TIME
+    GET last_sync
+    SUB
+    PUSH SYNC_INTERVAL
+    GT
+    IF
+        # Check if sync needed
+        CALL check_sync_needed
+        IF_SUCCESS
+            PUSH true
+            STORE is_syncing
+            
+            # Perform sync
+            CALL sync_blockchain
+            
+            PUSH false
+            STORE is_syncing
+            
+            TIME
+            STORE last_sync
+        END_IF
+    END_IF
+    RETURN
+
+# Process cleanup
+:process_cleanup
+    TIME
+    GET last_cleanup
+    SUB
+    PUSH CLEANUP_INTERVAL
+    GT
+    IF
+        # Perform cleanup tasks
+        CALL cleanup_old_data
+        CALL remove_stale_peers
+        CALL prune_mempool
+        
+        TIME
+        STORE last_cleanup
+    END_IF
+    RETURN
+
+# Check mining status
+:check_mining_status
+    GET is_mining
+    IF
+        # Check if we should stop mining
+        CALL should_stop_mining
+        IF_SUCCESS
+            CALL mining:stop
+            PUSH false
+            STORE is_mining
+        END_IF
+    ELSE
+        # Check if we should start mining
+        CALL should_start_mining
+        IF_SUCCESS
+            CALL mining:start
+            PUSH true
+            STORE is_mining
+        END_IF
+    END_IF
+    RETURN
+
+# Update node status
+:update_status
+    # Build status string
+    PUSH_FORMAT "Running - Peers: {}, Chain Height: {}, Mining: {}"
+        GET peer_count
+        CALL blockchain:get_height
+        GET is_mining
+    END_FORMAT
+    STORE status
+    
+    # Update terminal display
+    CALL terminal:update_status
+    
+    RETURN
+
+# Helper functions
+:check_sync_needed
+    # Check if we're behind peers
+    CALL get_peer_height
+    CALL blockchain:get_height
+    SUB
+    PUSH 10  # Threshold for sync
+    GT
+    RETURN
+
+:sync_blockchain
+    PUSH "Syncing blockchain..."
+    STORE status
+    
+    # Get blocks from peers
+    CALL get_missing_blocks
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:cleanup_old_data
+    # Clean up old data
+    CALL blockchain:cleanup_old_blocks
+    CALL wallet:cleanup_old_transactions
+    RETURN
+
+:remove_stale_peers
+    # Remove unresponsive peers
+    CALL network:remove_stale_peers
+    RETURN
+
+:prune_mempool
+    # Remove old transactions from mempool
+    CALL blockchain:prune_mempool
+    RETURN
+
+:should_start_mining
+    # Check conditions to start mining
+    GET peer_count
+    PUSH MIN_PEERS
+    GE
+    IF_NOT
+        RETURN 1
+    END_IF
+    
+    GET is_syncing
+    IF
+        RETURN 2
+    END_IF
+    
+    RETURN 0
+
+:should_stop_mining
+    # Check conditions to stop mining
+    GET peer_count
+    PUSH MIN_PEERS
+    LT
+    IF
+        RETURN 0
+    END_IF
+    
+    GET is_syncing
+    IF
+        RETURN 0
+    END_IF
+    
+    RETURN 1
+
+:get_peer_height
+    # Get highest block height among peers
+    CALL network:get_peer_heights
+    ARRAY_MAX
+    RETURN
+
+:get_missing_blocks
+    # Get missing blocks from peers
+    CALL blockchain:get_height
+    CALL get_peer_height
+    
+    OVER
+    SUB     # Number of blocks to fetch
+    
+    PUSH 0
+    GT
+    IF
+        CALL fetch_blocks
+    END_IF
+    
+    RETURN 0
+
+:fetch_blocks
+    # Stack: [start_height, end_height]
+    OVER    # start_height
+    SUB     # number of blocks
+    
+    # Fetch blocks in batches
+    PUSH 100    # batch size
+    MIN
+    
+    LOOP
+        CALL network:request_blocks
+        IF_ERR
+            CONTINUE
+        END_IF
+        
+        CALL blockchain:add_blocks
+        IF_ERR
+            RETURN_ERR
+        END_IF
+    END_LOOP
+    
+    RETURN 0
+
+# Get node status
+:get_status
+    GET status
+    RETURN
+
+# Get node info
+:get_info
+    NEW_INFO
+        PUSH NODE_VERSION
+        GET start_time
+        GET peer_count
+        GET is_mining
+        GET is_syncing
+        CALL blockchain:get_height
+        GET status
+    END_INFO
+    RETURN
