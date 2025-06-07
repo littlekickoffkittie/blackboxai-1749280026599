@@ -1,0 +1,70 @@
+# VentriQ Mining Demo
+
+# Print welcome message
+PUSH "=== VentriQ Mining Demo ==="
+PRINT
+
+# Initialize block header
+PUSH "VentriQ"              # Magic bytes
+PUSH 1                      # Version
+PUSH "Genesis Block"        # Block data
+CONCAT                      # Combine version and magic
+CONCAT                      # Add block data
+STORE 1                     # Store complete header
+
+PUSH "Block Header Created:"
+PRINT
+LOAD 1
+PRINT
+
+# Set mining target (realistic difficulty)
+PUSH 0x0F
+PUSH 0xFF
+PUSH 0xFF
+PUSH 0xFF
+STORE 2    # Store target at memory location 2
+
+
+PUSH "Starting Mining Process..."
+PRINT
+
+# Start mining
+LOAD 1    # Load block header
+LOAD 2    # Load target
+CALL qr_mine
+
+# Store nonce
+STORE 3
+
+PUSH "Mining Complete!"
+PRINT
+PUSH "Found Nonce:"
+PRINT
+LOAD 3
+PRINT
+
+PUSH "Generating QR Code..."
+PRINT
+
+# Generate QR code with nonce
+LOAD 1     # Load block header
+LOAD 3     # Load nonce
+CONCAT     # Combine header and nonce
+CALL qr_generate
+DUP        # Duplicate QR code reference
+CALL qr_print   # Display QR code
+
+PUSH "Verifying QR Code..."
+PRINT
+
+# Verify QR code meets criteria
+LOAD 2     # Load target
+SWAP       # Swap with QR code reference
+CALL qr_verify
+
+PUSH "Verification Result:"
+PRINT
+PRINT      # Print verification result (1 for success, 0 for failure)
+
+PUSH "=== Demo Complete ==="
+PRINT
