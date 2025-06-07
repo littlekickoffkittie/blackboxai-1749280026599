@@ -1,0 +1,347 @@
+# VentriQ Node Heartbeat System
+# Monitors node health and manages heartbeat messages
+
+IMPORT "../src/network.cry"
+IMPORT "gossip_protocol.cry"
+
+# Constants
+CONST HEARTBEAT_INTERVAL 30000   # 30 seconds
+CONST RESPONSE_TIMEOUT 5000      # 5 seconds
+CONST MAX_MISSED_BEATS 3        # Maximum consecutive missed heartbeats
+CONST MIN_PEERS_HEALTH 3        # Minimum peers for healthy status
+
+# Heartbeat message structure
+STRUCT Heartbeat
+    str     node_id
+    u64     timestamp
+    u32     block_height
+    u32     peer_count
+    bool    is_mining
+    bytes   fractal_sigil
+END
+
+# Node health status
+ENUM HealthStatus
+    HEALTHY
+    DEGRADED
+    UNHEALTHY
+    CRITICAL
+END
+
+# Heartbeat state
+:heartbeat_state
+    bool    is_active
+    u64     last_beat
+    u32     missed_beats
+    array   peer_status      # Status of each peer
+    str     health_status
+    bytes   current_sigil
+
+# Initialize heartbeat system
+:init
+    # Initialize state
+    PUSH false
+    STORE is_active
+    
+    TIME
+    STORE last_beat
+    
+    PUSH 0
+    STORE missed_beats
+    
+    ARRAY_NEW
+    STORE peer_status
+    
+    PUSH "HEALTHY"
+    STORE health_status
+    
+    # Generate initial fractal sigil
+    CALL generate_heartbeat_sigil
+    STORE current_sigil
+    
+    RETURN 0
+
+# Start heartbeat system
+:start
+    PUSH true
+    STORE is_active
+    
+    # Start heartbeat loop
+    SPAWN heartbeat_loop
+    
+    # Start monitoring loop
+    SPAWN monitor_loop
+    
+    LOG_INFO "Heartbeat system started"
+    RETURN 0
+
+# Stop heartbeat system
+:stop
+    PUSH false
+    STORE is_active
+    
+    LOG_INFO "Heartbeat system stopped"
+    RETURN 0
+
+# Main heartbeat loop
+:heartbeat_loop
+    WHILE GET is_active
+        # Send heartbeat
+        CALL send_heartbeat
+        
+        # Wait for interval
+        PUSH HEARTBEAT_INTERVAL
+        SLEEP
+    END_WHILE
+    RETURN
+
+# Monitor loop
+:monitor_loop
+    WHILE GET is_active
+        # Check peer responses
+        CALL check_peer_responses
+        
+        # Update health status
+        CALL update_health_status
+        
+        # Check for critical conditions
+        CALL check_critical_conditions
+        
+        # Sleep briefly
+        PUSH 1000    # 1 second
+        SLEEP
+    END_WHILE
+    RETURN
+
+# Send heartbeat
+:send_heartbeat
+    # Create heartbeat message
+    NEW_HEARTBEAT
+        CALL network:get_node_id
+        TIME
+        CALL blockchain:get_height
+        CALL network:get_peer_count
+        CALL mining:is_mining
+        GET current_sigil
+    END_HEARTBEAT
+    
+    # Broadcast to peers
+    CALL gossip:broadcast_heartbeat
+    
+    # Update timestamp
+    TIME
+    STORE last_beat
+    
+    RETURN 0
+
+# Handle received heartbeat
+:handle_heartbeat
+    # Stack: [heartbeat, peer]
+    # Validate heartbeat
+    CALL validate_heartbeat
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Update peer status
+    CALL update_peer_status
+    
+    # Send response
+    CALL send_heartbeat_response
+    
+    RETURN 0
+
+# Check peer responses
+:check_peer_responses
+    GET peer_status
+    FOREACH peer
+        # Check last response time
+        GET last_response
+        TIME
+        SUB
+        PUSH RESPONSE_TIMEOUT
+        GT
+        IF
+            # Handle missed heartbeat
+            CALL handle_missed_heartbeat
+        END_IF
+    END_FOREACH
+    
+    RETURN
+
+# Update health status
+:update_health_status
+    # Check number of healthy peers
+    CALL count_healthy_peers
+    PUSH MIN_PEERS_HEALTH
+    LT
+    IF
+        PUSH "DEGRADED"
+        STORE health_status
+        RETURN
+    END_IF
+    
+    # Check missed beats
+    GET missed_beats
+    PUSH 0
+    GT
+    IF
+        PUSH "DEGRADED"
+        STORE health_status
+        RETURN
+    END_IF
+    
+    # All good
+    PUSH "HEALTHY"
+    STORE health_status
+    
+    RETURN
+
+# Check critical conditions
+:check_critical_conditions
+    # Check consecutive missed beats
+    GET missed_beats
+    PUSH MAX_MISSED_BEATS
+    GE
+    IF
+        PUSH "CRITICAL"
+        STORE health_status
+        CALL handle_critical_condition
+    END_IF
+    
+    # Check peer count
+    CALL network:get_peer_count
+    PUSH 1
+    LE
+    IF
+        PUSH "CRITICAL"
+        STORE health_status
+        CALL handle_critical_condition
+    END_IF
+    
+    RETURN
+
+# Handle missed heartbeat
+:handle_missed_heartbeat
+    # Increment missed beats
+    GET missed_beats
+    ADD 1
+    STORE missed_beats
+    
+    # Log warning
+    PUSH_FORMAT "Missed heartbeat (count: {})"
+        GET missed_beats
+    END_FORMAT
+    LOG_WARN
+    
+    RETURN
+
+# Handle critical condition
+:handle_critical_condition
+    # Log critical condition
+    LOG_ERROR "Node in CRITICAL state"
+    
+    # Try to recover
+    CALL attempt_recovery
+    
+    # Notify other nodes
+    CALL notify_critical_status
+    
+    RETURN
+
+# Attempt recovery
+:attempt_recovery
+    # Reset missed beats
+    PUSH 0
+    STORE missed_beats
+    
+    # Generate new sigil
+    CALL generate_heartbeat_sigil
+    STORE current_sigil
+    
+    # Attempt to reconnect peers
+    CALL network:reconnect_peers
+    
+    RETURN
+
+# Helper functions
+:validate_heartbeat
+    # Stack: [heartbeat]
+    # Check timestamp
+    GET timestamp
+    TIME
+    SUB
+    ABS
+    PUSH 60000   # 1 minute
+    GT
+    IF
+        RETURN 1
+    END_IF
+    
+    # Verify fractal sigil
+    GET fractal_sigil
+    CALL verify_heartbeat_sigil
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+:update_peer_status
+    # Stack: [heartbeat, peer]
+    # Update peer's last response
+    TIME
+    STORE_FIELD last_response
+    
+    # Update peer's status
+    GET heartbeat
+    STORE_FIELD status
+    
+    RETURN
+
+:count_healthy_peers
+    # Count peers with recent responses
+    PUSH 0
+    GET peer_status
+    FOREACH peer
+        GET last_response
+        TIME
+        SUB
+        PUSH RESPONSE_TIMEOUT
+        LT
+        IF
+            ADD 1
+        END_IF
+    END_FOREACH
+    
+    RETURN
+
+:generate_heartbeat_sigil
+    # Generate unique fractal pattern
+    TIME
+    CALL network:get_node_id
+    CONCAT
+    HASH SHA256
+    CALL fractal:generate_pattern
+    
+    RETURN
+
+:verify_heartbeat_sigil
+    # Stack: [sigil]
+    # Verify fractal pattern
+    CALL fractal:verify_pattern
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Get current health status
+:get_health_status
+    GET health_status
+    RETURN
+
+# Get missed beats count
+:get_missed_beats
+    GET missed_beats
+    RETURN
