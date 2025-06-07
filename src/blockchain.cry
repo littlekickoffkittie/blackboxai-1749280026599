@@ -1,0 +1,220 @@
+# VentriQ Blockchain Core
+# Implements blockchain data structures and validation logic
+
+IMPORT "fractal.cry"
+IMPORT "../ext/qr_pow_validator.cry"
+
+# Block structure constants
+CONST BLOCK_VERSION 1
+CONST DIFFICULTY_ADJUSTMENT_INTERVAL 2016  # Number of blocks between difficulty adjustments
+
+# Block structure definition
+STRUCT Block
+    u32     index
+    bytes32 prev_hash
+    u64     timestamp
+    bytes32 merkle_root
+    bytes   qr_nonce      # QR code-based proof of work
+    bytes   fractal_sigil # Miner's unique fractal pattern
+    bytes[] transactions
+END
+
+# Blockchain state
+:chain_state
+    ARRAY blocks         # Array of all blocks
+    bytes32 latest_hash  # Hash of the latest block
+    u32    difficulty    # Current mining difficulty
+    u64    last_update  # Last difficulty adjustment time
+
+# Initialize blockchain
+:init
+    # Create genesis block
+    PUSH "VentriQ Genesis Block - Fractal-based Cryptocurrency"
+    HASH SHA256
+    STORE genesis_hash
+
+    # Generate fractal sigil for genesis block
+    CALL fractal:generate_sigil
+    STORE genesis_sigil
+
+    # Create genesis block structure
+    NEW_BLOCK
+        PUSH 0          # index
+        PUSH 0x00      # prev_hash (zeros for genesis)
+        TIME           # timestamp
+        STORE genesis_hash  # merkle_root
+        STORE "GENESIS"    # qr_nonce
+        STORE genesis_sigil # fractal_sigil
+        ARRAY_NEW      # empty transactions
+    END_BLOCK
+    
+    # Store genesis block
+    ARRAY_PUSH blocks
+    
+    LOG_INFO "Blockchain initialized with genesis block"
+    RETURN 0
+
+# Create new block
+:create_block
+    # Stack: [prev_block]
+    DUP
+    GET index
+    ADD 1              # New block index
+    
+    DUP
+    GET hash
+    STORE prev_hash    # Previous block's hash
+    
+    TIME              # Current timestamp
+    
+    # Generate new fractal sigil for miner
+    CALL fractal:generate_sigil
+    
+    # Create new block structure
+    NEW_BLOCK
+        ROT           # index
+        ROT           # prev_hash
+        ROT           # timestamp
+        CALL create_merkle_root
+        PUSH ""       # Empty QR nonce (to be filled by miner)
+        ROT           # fractal_sigil
+        GET_MEMPOOL   # pending transactions
+    END_BLOCK
+    
+    RETURN
+
+# Validate block
+:validate_block
+    # Stack: [block]
+    DUP
+    
+    # Verify block structure
+    CALL verify_structure
+    IF_ERR
+        LOG_ERROR "Invalid block structure"
+        RETURN_ERR
+    END_IF
+    
+    # Verify proof of work
+    GET qr_nonce
+    CALL qr_pow:validate
+    IF_ERR
+        LOG_ERROR "Invalid proof of work"
+        RETURN_ERR
+    END_IF
+    
+    # Verify fractal sigil
+    GET fractal_sigil
+    CALL fractal:verify_sigil
+    IF_ERR
+        LOG_ERROR "Invalid fractal sigil"
+        RETURN_ERR
+    END_IF
+    
+    # Verify transactions
+    GET transactions
+    CALL verify_transactions
+    IF_ERR
+        LOG_ERROR "Invalid transactions"
+        RETURN_ERR
+    END_IF
+    
+    RETURN 0
+
+# Add block to chain
+:add_block
+    # Stack: [block]
+    DUP
+    CALL validate_block
+    IF_ERR
+        RETURN_ERR
+    END_IF
+    
+    # Add to blocks array
+    ARRAY_PUSH blocks
+    
+    # Update latest hash
+    DUP
+    HASH SHA256
+    STORE latest_hash
+    
+    # Check if difficulty adjustment needed
+    GET index
+    MOD DIFFICULTY_ADJUSTMENT_INTERVAL
+    IF_ZERO
+        CALL adjust_difficulty
+    END_IF
+    
+    LOG_INFO "New block added to chain"
+    CALL terminal:draw_block_added
+    
+    RETURN 0
+
+# Helper functions
+:create_merkle_root
+    # Stack: [transactions]
+    DUP
+    IF_EMPTY
+        DROP
+        PUSH 0x00
+        RETURN
+    END_IF
+    
+    CALL merkle:create_tree
+    RETURN
+
+:verify_structure
+    # Basic block structure verification
+    # Returns 0 if valid, error code if invalid
+    DUP
+    GET index
+    IF_NEG
+        RETURN 1
+    END_IF
+    
+    DUP
+    GET timestamp
+    TIME
+    SUB
+    ABS
+    PUSH 7200  # 2 hours
+    GT
+    IF
+        RETURN 2
+    END_IF
+    
+    RETURN 0
+
+:verify_transactions
+    # Verify all transactions in block
+    # Returns 0 if valid, error code if invalid
+    FOREACH tx
+        CALL wallet:verify_transaction
+        IF_ERR
+            RETURN_ERR
+        END_IF
+    END
+    RETURN 0
+
+:adjust_difficulty
+    # Adjust mining difficulty based on block time average
+    # Stack: []
+    GET_BLOCK_TIME_AVERAGE
+    PUSH 30  # Target block time in seconds
+    
+    # Adjust up or down based on average
+    DIV
+    STORE new_difficulty
+    
+    # Ensure difficulty doesn't change too drastically
+    PUSH 4   # Max adjustment factor
+    MIN
+    PUSH 0.25 # Min adjustment factor
+    MAX
+    
+    GET difficulty
+    MUL
+    STORE difficulty
+    
+    LOG_INFO "Difficulty adjusted"
+    RETURN
